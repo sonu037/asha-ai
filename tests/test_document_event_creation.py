@@ -80,6 +80,15 @@ def test_verified_document_creates_person_event():
             ),
         )
 
+    classification_response = client.post(
+        f"/documents/{document_id}/classification/verify",
+        json={
+            "document_type": "anc_record",
+            "verified_by": "TEST-ASHA-001",
+        },
+    )
+    assert classification_response.status_code == 200
+
     event_response = client.post(
         f"/documents/{document_id}/create-event",
         json={

@@ -29,7 +29,9 @@ def test_tesseract_extracts_text_and_facts_when_engine_returns_text(tmp_path, mo
     assert [fact.value for fact in result.facts if fact.field_name == "name"] == [
         "Noor"
     ]
-    assert result.warnings == []
+    assert result.warnings == [
+        "Rule-based document classification requires human review."
+    ]
 
 
 def test_blank_ocr_is_failed_and_has_no_facts(tmp_path, monkeypatch):

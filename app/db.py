@@ -33,13 +33,16 @@ CREATE TABLE IF NOT EXISTS documents (
  id INTEGER PRIMARY KEY AUTOINCREMENT, external_id TEXT UNIQUE NOT NULL, document_type TEXT,
  original_filename TEXT, storage_path TEXT NOT NULL, content_hash TEXT, captured_at TEXT, ocr_text TEXT, language TEXT,
  extraction_status TEXT NOT NULL DEFAULT 'pending', verification_status TEXT NOT NULL DEFAULT 'unverified',
+ created_by TEXT, extraction_provider TEXT, extraction_model TEXT, processing_version TEXT,
+ extraction_warnings TEXT, classification_confidence REAL,
+ classification_needs_review INTEGER NOT NULL DEFAULT 1,
  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS document_fields (
  id INTEGER PRIMARY KEY AUTOINCREMENT, document_id INTEGER NOT NULL, field_name TEXT NOT NULL,
  extracted_value TEXT, confidence REAL, page_number INTEGER, bounding_box TEXT, extraction_method TEXT,
  verified_value TEXT, verified_by TEXT, verified_at TEXT, needs_review INTEGER NOT NULL DEFAULT 0,
- review_reason TEXT, FOREIGN KEY (document_id) REFERENCES documents(id)
+ review_reason TEXT, source_text TEXT, FOREIGN KEY (document_id) REFERENCES documents(id)
 );
 CREATE TABLE IF NOT EXISTS canonical_records (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -105,6 +108,33 @@ def init_db():
         }
         if "content_hash" not in document_cols:
             conn.execute("ALTER TABLE documents ADD COLUMN content_hash TEXT")
+        if "created_by" not in document_cols:
+            conn.execute("ALTER TABLE documents ADD COLUMN created_by TEXT")
+        document_migrations = {
+            "extraction_provider": "TEXT",
+            "extraction_model": "TEXT",
+            "processing_version": "TEXT",
+            "extraction_warnings": "TEXT",
+            "classification_confidence": "REAL",
+            "classification_needs_review": (
+                "INTEGER NOT NULL DEFAULT 1"
+            ),
+        }
+        for column, column_type in document_migrations.items():
+            if column not in document_cols:
+                conn.execute(
+                    f"ALTER TABLE documents ADD COLUMN {column} {column_type}"
+                )
+        field_cols = {
+            row["name"]
+            for row in conn.execute(
+                "PRAGMA table_info(document_fields)"
+            ).fetchall()
+        }
+        if "source_text" not in field_cols:
+            conn.execute(
+                "ALTER TABLE document_fields ADD COLUMN source_text TEXT"
+            )
         _create_unique_index_if_clean(
             conn,
             """SELECT COUNT(*) FROM (

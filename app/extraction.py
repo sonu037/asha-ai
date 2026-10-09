@@ -16,11 +16,11 @@ def _add_fact(
         ExtractedFact(
             field_name=field_name,
             value=value,
-            confidence=confidence,
+            confidence=min(float(confidence), 0.5),
             source_text=source_text,
             method="rule",
-            needs_review=needs_review,
-            reason=reason,
+            needs_review=True,
+            reason=reason or "Rule-based extraction requires human review; confidence is not calibrated.",
         )
     )
 
@@ -39,17 +39,19 @@ def extract_basic_facts(text: str) -> list[ExtractedFact]:
     # NAME
     # ---------------------------------------------------------
     match = re.search(
-        r"(?im)^\s*name\s*[:\-]?\s*(.+?)\s*$",
+        r"(?im)^[ \t]*name[ \t]*[:\-]?[ \t]*(\S[^\r\n]*?)[ \t]*$",
         text,
     )
     if match:
-        _add_fact(
-            facts,
-            field_name="name",
-            value=match.group(1).strip(),
-            source_text=match.group(0).strip(),
-            confidence=0.99,
-        )
+        name = match.group(1).strip().strip(":-").strip()
+        if name:
+            _add_fact(
+                facts,
+                field_name="name",
+                value=name,
+                source_text=match.group(0).strip(),
+                confidence=0.99,
+            )
 
     # ---------------------------------------------------------
     # AGE

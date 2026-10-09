@@ -4,25 +4,29 @@ import sqlite3
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import Depends, FastAPI, File, Request, UploadFile, HTTPException
 
 from .config import DOCUMENT_DIR
 from .db import connection, init_db
+from .auth import actor_for_request, authorize_request, require_document_access
+from .ai import get_provider
 from .models import (
     HouseholdCreate,
     PersonCreate,
     EventCreate,
     FieldVerification,
+    ClassificationVerification,
     CanonicalRecordCreate,
     DocumentPersonLink,
     DocumentEventCreate,
 )
-from .ai import provider
 from .batch_a import (
     _person_match_candidates,
     auto_create_event_from_verified_document,
     router as batch_a_router,
 )
+from .classification import DOCUMENT_TYPES
+from .assistant_routes import router as assistant_router
 from .document_intelligence import tesseract_provider
 
 
@@ -30,14 +34,17 @@ app = FastAPI(
     title="ASHA AI",
     version="0.2.0",
     description="AI-first ASHA documentation and record intelligence platform.",
+    dependencies=[Depends(authorize_request)],
 )
 
 app.include_router(batch_a_router)
+app.include_router(assistant_router)
 
 
 @app.on_event("startup")
 def startup():
     init_db()
+    get_provider()
 
 
 @app.get("/health")
@@ -50,7 +57,7 @@ def health():
 
 
 @app.post("/households")
-def create_household(payload: HouseholdCreate):
+def create_household(payload: HouseholdCreate, request: Request):
     with connection() as conn:
         try:
             cur = conn.execute(
@@ -73,6 +80,12 @@ def create_household(payload: HouseholdCreate):
                 409,
                 f"Household could not be created: {e}",
             )
+        conn.execute(
+            """INSERT INTO audit_log (
+                   actor_id, action, entity_type, entity_id, details_json
+               ) VALUES (?, 'create_household', 'household', ?, '{}')""",
+            (actor_for_request(request), str(cur.lastrowid)),
+        )
 
         return {
             "id": cur.lastrowid,
@@ -81,7 +94,7 @@ def create_household(payload: HouseholdCreate):
 
 
 @app.post("/people")
-def create_person(payload: PersonCreate):
+def create_person(payload: PersonCreate, request: Request):
     with connection() as conn:
         if not conn.execute(
             "SELECT id FROM households WHERE id=?",
@@ -106,6 +119,12 @@ def create_person(payload: PersonCreate):
             """,
             tuple(payload.model_dump().values()),
         )
+        conn.execute(
+            """INSERT INTO audit_log (
+                   actor_id, action, entity_type, entity_id, details_json
+               ) VALUES (?, 'create_person', 'person', ?, '{}')""",
+            (actor_for_request(request), str(cur.lastrowid)),
+        )
 
         return {
             "id": cur.lastrowid,
@@ -114,13 +133,38 @@ def create_person(payload: PersonCreate):
 
 
 @app.get("/households")
-def list_households():
+def list_households(request: Request):
     with connection() as conn:
-        return [
-            dict(row)
-            for row in conn.execute(
+        principal = request.state.principal
+        if principal.is_admin:
+            rows = conn.execute(
                 "SELECT * FROM households ORDER BY id DESC"
             ).fetchall()
+        else:
+            person_ids = sorted(principal.person_ids)
+            household_ids = sorted(principal.household_ids)
+            predicates = []
+            params = []
+            if person_ids:
+                predicates.append(
+                    f"id IN (SELECT household_id FROM people WHERE id IN ({','.join('?' for _ in person_ids)}))"
+                )
+                params.extend(person_ids)
+            if household_ids:
+                predicates.append(
+                    f"id IN ({','.join('?' for _ in household_ids)})"
+                )
+                params.extend(household_ids)
+            if predicates:
+                rows = conn.execute(
+                    f"SELECT * FROM households WHERE {' OR '.join(predicates)} ORDER BY id DESC",
+                    params,
+                ).fetchall()
+            else:
+                rows = []
+        return [
+            dict(row)
+            for row in rows
         ]
 
 
@@ -181,10 +225,21 @@ def get_person(person_id: int):
 
 @app.post("/documents")
 async def upload_document(
+    request: Request,
     file: UploadFile = File(...),
 ):
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
+        raise HTTPException(
+            415,
+            "Only JPEG, PNG, and WebP image documents are supported by the current OCR pipeline.",
+        )
     content_digest = hashlib.sha256()
+    content_length = 0
     while chunk := await file.read(1024 * 1024):
+        content_length += len(chunk)
+        if content_length > 10 * 1024 * 1024:
+            raise HTTPException(413, "Document uploads are limited to 10 MiB.")
         content_digest.update(chunk)
     content_hash = content_digest.hexdigest()
     with connection() as conn:
@@ -193,6 +248,20 @@ async def upload_document(
             (content_hash,),
         ).fetchone()
     if existing:
+        try:
+            with connection() as conn:
+                require_document_access(
+                    conn,
+                    request.state.principal,
+                    existing["id"],
+                )
+        except HTTPException as exc:
+            if exc.status_code != 404:
+                raise
+            raise HTTPException(
+                409,
+                "Identical content is already stored but is outside your access scope.",
+            ) from None
         return {
             "status": "duplicate",
             "document_id": existing["id"],
@@ -201,14 +270,15 @@ async def upload_document(
         }
 
     doc_id = str(uuid.uuid4())
-    suffix = Path(
-        file.filename or ""
-    ).suffix.lower()
     target = DOCUMENT_DIR / f"{doc_id}{suffix}"
     await file.seek(0)
-    with target.open("wb") as stored_file:
-        while chunk := await file.read(1024 * 1024):
-            stored_file.write(chunk)
+    try:
+        with target.open("wb") as stored_file:
+            while chunk := await file.read(1024 * 1024):
+                stored_file.write(chunk)
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
 
     external_id = (
         f"ASHA-DOC-{doc_id[:8].upper()}"
@@ -222,9 +292,10 @@ async def upload_document(
                     external_id,
                     original_filename,
                     storage_path,
-                    content_hash
+                    content_hash,
+                    created_by
                 )
-                VALUES (?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?)
                 """,
                 (
                     external_id,
@@ -235,9 +306,16 @@ async def upload_document(
                         )
                     ),
                     content_hash,
+                    request.state.principal.subject,
                 ),
             )
             numeric_id = cur.lastrowid
+            conn.execute(
+                """INSERT INTO audit_log (
+                       actor_id, action, entity_type, entity_id, details_json
+                   ) VALUES (?, 'upload_document', 'document', ?, '{}')""",
+                (request.state.principal.subject, str(numeric_id)),
+            )
     except sqlite3.IntegrityError:
         target.unlink(missing_ok=True)
         with connection() as conn:
@@ -247,6 +325,20 @@ async def upload_document(
             ).fetchone()
         if not existing:
             raise
+        try:
+            with connection() as conn:
+                require_document_access(
+                    conn,
+                    request.state.principal,
+                    existing["id"],
+                )
+        except HTTPException as access_error:
+            if access_error.status_code != 404:
+                raise
+            raise HTTPException(
+                409,
+                "Identical content is already stored but is outside your access scope.",
+            ) from None
         return {
             "status": "duplicate",
             "document_id": existing["id"],
@@ -257,9 +349,7 @@ async def upload_document(
         target.unlink(missing_ok=True)
         raise
 
-    result = tesseract_provider.extract(
-        str(target)
-    )
+    result = get_provider().extract(str(target))
 
     with connection() as conn:
         conn.execute(
@@ -269,7 +359,13 @@ async def upload_document(
                 document_type=?,
                 language=?,
                 ocr_text=?,
-                extraction_status=?
+                extraction_status=?,
+                extraction_provider=?,
+                extraction_model=?,
+                processing_version=?,
+                extraction_warnings=?,
+                classification_confidence=?,
+                classification_needs_review=?
             WHERE id=?
             """,
             (
@@ -277,6 +373,12 @@ async def upload_document(
                 result.language,
                 result.raw_text,
                 result.extraction_status,
+                result.provider,
+                result.model,
+                result.processing_version,
+                json.dumps(result.warnings),
+                result.classification_confidence,
+                int(result.classification_needs_review),
                 numeric_id,
             ),
         )
@@ -293,9 +395,10 @@ async def upload_document(
                     bounding_box,
                     extraction_method,
                     needs_review,
-                    review_reason
+                    review_reason,
+                    source_text
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     numeric_id,
@@ -311,6 +414,7 @@ async def upload_document(
                     fact.method,
                     int(fact.needs_review),
                     fact.reason,
+                    fact.source_text,
                 ),
             )
 
@@ -352,16 +456,68 @@ def get_document(document_id: int):
             "document": dict(doc),
             "fields": [dict(field) for field in fields],
         }
+
+
+@app.post("/documents/{document_id}/classification/verify")
+def verify_document_classification(
+    document_id: int,
+    payload: ClassificationVerification,
+    request: Request,
+):
+    if payload.document_type not in DOCUMENT_TYPES:
+        raise HTTPException(422, "Unsupported document type.")
+    actor_id = actor_for_request(request, payload.verified_by)
+    automatic_event = {"status": "not_ready"}
+    with connection() as conn:
+        document = conn.execute(
+            "SELECT id, verification_status FROM documents WHERE id=?",
+            (document_id,),
+        ).fetchone()
+        if not document:
+            raise HTTPException(404, "Document not found.")
+        conn.execute(
+            """UPDATE documents
+               SET document_type=?, classification_needs_review=0
+               WHERE id=?""",
+            (payload.document_type, document_id),
+        )
+        conn.execute(
+            """INSERT INTO audit_log (
+                   actor_id, action, entity_type, entity_id, details_json
+               ) VALUES (?, 'verify_document_classification', 'document', ?, ?)""",
+            (
+                actor_id,
+                str(document_id),
+                json.dumps({"document_type": payload.document_type}),
+            ),
+        )
+        if document["verification_status"] == "verified":
+            automatic_event = auto_create_event_from_verified_document(
+                conn,
+                document_id,
+                actor_id,
+            )
+    return {
+        "status": "verified",
+        "document_id": document_id,
+        "document_type": payload.document_type,
+        "verified_by": actor_id,
+        "automatic_event": automatic_event,
+    }
+
+
 @app.get("/documents/{document_id}/person-candidates")
-def document_person_candidates(document_id: int):
-    return _person_match_candidates(document_id)
+def document_person_candidates(document_id: int, request: Request):
+    return _person_match_candidates(document_id, request.state.principal)
 
 
 @app.post("/documents/{document_id}/link-person")
 def link_document_to_person(
     document_id: int,
     payload: DocumentPersonLink,
+    request: Request,
 ):
+    actor_id = actor_for_request(request, payload.linked_by)
     with connection() as conn:
         document = conn.execute(
             """
@@ -420,7 +576,7 @@ def link_document_to_person(
             (
                 document_id,
                 payload.person_id,
-                payload.linked_by,
+                actor_id,
             ),
         )
 
@@ -436,7 +592,7 @@ def link_document_to_person(
             VALUES (?, ?, ?, ?, ?)
             """,
             (
-                payload.linked_by,
+                actor_id,
                 "link_document_to_person",
                 "document",
                 str(document_id),
@@ -452,13 +608,15 @@ def link_document_to_person(
             "status": "linked",
             "document_id": document_id,
             "person_id": payload.person_id,
-            "linked_by": payload.linked_by,
+            "linked_by": actor_id,
         }
 @app.post("/documents/{document_id}/create-event")
 def create_event_from_document(
     document_id: int,
     payload: DocumentEventCreate,
+    request: Request,
 ):
+    actor_id = actor_for_request(request, payload.verified_by)
     with connection() as conn:
         document = conn.execute(
             """
@@ -479,6 +637,11 @@ def create_event_from_document(
             raise HTTPException(
                 409,
                 "Document must be fully verified before creating an event",
+            )
+        if document["classification_needs_review"]:
+            raise HTTPException(
+                409,
+                "Document classification must be verified before creating an event.",
             )
 
         person = conn.execute(
@@ -570,7 +733,7 @@ def create_event_from_document(
                 payload.event_date,
                 details_json,
                 document_id,
-                payload.verified_by,
+                actor_id,
             ),
         )
 
@@ -588,7 +751,7 @@ def create_event_from_document(
             VALUES (?, ?, ?, ?, ?)
             """,
             (
-                payload.verified_by,
+                actor_id,
                 "create_event_from_document",
                 "event",
                 str(event_id),
@@ -609,7 +772,7 @@ def create_event_from_document(
             "event_type": payload.event_type,
             "event_date": payload.event_date,
             "verification_status": "verified",
-            "verified_by": payload.verified_by,
+            "verified_by": actor_id,
         }
 @app.post(
     "/documents/{document_id}/fields/{field_id}/verify"
@@ -618,7 +781,9 @@ def verify_field(
     document_id: int,
     field_id: int,
     payload: FieldVerification,
+    request: Request,
 ):
+    actor_id = actor_for_request(request, payload.verified_by)
     automatic_event = {"status": "not_ready"}
     with connection() as conn:
         cur = conn.execute(
@@ -634,7 +799,7 @@ def verify_field(
             """,
             (
                 payload.verified_value,
-                payload.verified_by,
+                actor_id,
                 field_id,
                 document_id,
             ),
@@ -686,7 +851,7 @@ def verify_field(
             VALUES (?, ?, ?, ?, ?)
             """,
             (
-                payload.verified_by,
+                actor_id,
                 "verify_field",
                 "document_field",
                 str(field_id),
@@ -701,7 +866,7 @@ def verify_field(
             automatic_event = auto_create_event_from_verified_document(
                 conn,
                 document_id,
-                payload.verified_by,
+                actor_id,
             )
 
     return {
@@ -713,18 +878,36 @@ def verify_field(
 
 
 @app.post("/events")
-def create_event(payload: EventCreate):
+def create_event(payload: EventCreate, request: Request):
+    principal = request.state.principal
+    if not principal.is_admin and payload.verification_status == "verified":
+        raise HTTPException(
+            403,
+            "Only an administrator may create an already-verified event.",
+        )
+    actor_id = actor_for_request(request, payload.verified_by or payload.asha_id)
+    event_status = payload.verification_status if principal.is_admin else "unverified"
+    verified_by = actor_id if event_status == "verified" else None
     with connection() as conn:
 
         # Verify referenced person if provided
         if payload.person_id is not None:
-            if not conn.execute(
-                "SELECT id FROM people WHERE id=?",
+            person = conn.execute(
+                "SELECT id, household_id FROM people WHERE id=?",
                 (payload.person_id,),
-            ).fetchone():
+            ).fetchone()
+            if not person:
                 raise HTTPException(
                     404,
                     "Person not found",
+                )
+            if (
+                payload.household_id is not None
+                and payload.household_id != person["household_id"]
+            ):
+                raise HTTPException(
+                    409,
+                    "Person does not belong to the specified household.",
                 )
 
         # Verify referenced household if provided
@@ -740,14 +923,42 @@ def create_event(payload: EventCreate):
 
         # Verify source document if provided
         if payload.source_document_id is not None:
-            if not conn.execute(
-                "SELECT id FROM documents WHERE id=?",
+            source_document = conn.execute(
+                "SELECT id, classification_needs_review FROM documents WHERE id=?",
                 (payload.source_document_id,),
-            ).fetchone():
+            ).fetchone()
+            if not source_document:
                 raise HTTPException(
                     404,
                     "Source document not found",
                 )
+            if (
+                event_status == "verified"
+                and source_document["classification_needs_review"]
+            ):
+                raise HTTPException(
+                    409,
+                    "Document classification must be verified before creating a verified event.",
+                )
+            if not principal.is_admin:
+                if payload.person_id is not None:
+                    linked = conn.execute(
+                        """SELECT 1 FROM document_person_links
+                           WHERE document_id=? AND person_id=?""",
+                        (payload.source_document_id, payload.person_id),
+                    ).fetchone()
+                else:
+                    linked = conn.execute(
+                        """SELECT 1 FROM document_person_links l
+                           JOIN people p ON p.id=l.person_id
+                           WHERE l.document_id=? AND p.household_id=?""",
+                        (payload.source_document_id, payload.household_id),
+                    ).fetchone()
+                if not linked:
+                    raise HTTPException(
+                        409,
+                        "Source document must be linked to the event person or household.",
+                    )
 
         cur = conn.execute(
             """
@@ -775,14 +986,14 @@ def create_event(payload: EventCreate):
                 payload.external_id,
                 payload.household_id,
                 payload.person_id,
-                payload.asha_id,
+                payload.asha_id if principal.is_admin else actor_id,
                 payload.event_type,
                 payload.event_date,
                 json.dumps(payload.details),
                 payload.source_document_id,
-                payload.verification_status,
-                payload.verified_by,
-                payload.verified_by,
+                event_status,
+                verified_by,
+                verified_by,
             ),
         )
 
@@ -800,7 +1011,7 @@ def create_event(payload: EventCreate):
             VALUES (?, ?, ?, ?, ?)
             """,
             (
-                payload.verified_by or payload.asha_id,
+                actor_id,
                 "create_event",
                 "event",
                 str(event_id),
@@ -808,7 +1019,7 @@ def create_event(payload: EventCreate):
                     {
                         "event_type": payload.event_type,
                         "verification_status": (
-                            payload.verification_status
+                            event_status
                         ),
                         "source_document_id": (
                             payload.source_document_id
@@ -820,25 +1031,43 @@ def create_event(payload: EventCreate):
 
         return {
             "id": event_id,
-            **payload.model_dump(),
+            **payload.model_copy(
+                update={
+                    "asha_id": payload.asha_id if principal.is_admin else actor_id,
+                    "verification_status": event_status,
+                    "verified_by": verified_by,
+                    "verified_at": None,
+                }
+            ).model_dump(),
         }
 
 
 @app.post("/canonical-records")
 def create_canonical_record(
     payload: CanonicalRecordCreate,
+    request: Request,
 ):
+    actor_id = actor_for_request(request, payload.verified_by)
     with connection() as conn:
 
         # Verify referenced person if provided
         if payload.person_id is not None:
-            if not conn.execute(
-                "SELECT id FROM people WHERE id=?",
+            person = conn.execute(
+                "SELECT id, household_id FROM people WHERE id=?",
                 (payload.person_id,),
-            ).fetchone():
+            ).fetchone()
+            if not person:
                 raise HTTPException(
                     404,
                     "Person not found",
+                )
+            if (
+                payload.household_id is not None
+                and payload.household_id != person["household_id"]
+            ):
+                raise HTTPException(
+                    409,
+                    "Person does not belong to the specified household.",
                 )
 
         # Verify referenced household if provided
@@ -863,6 +1092,27 @@ def create_canonical_record(
                     404,
                     "Source document not found",
                 )
+            if not request.state.principal.is_admin:
+                if payload.person_id is not None:
+                    linked = conn.execute(
+                        """SELECT 1 FROM document_person_links
+                           WHERE document_id=? AND person_id=?""",
+                        (payload.source_document_id, payload.person_id),
+                    ).fetchone()
+                elif payload.household_id is not None:
+                    linked = conn.execute(
+                        """SELECT 1 FROM document_person_links l
+                           JOIN people p ON p.id=l.person_id
+                           WHERE l.document_id=? AND p.household_id=?""",
+                        (payload.source_document_id, payload.household_id),
+                    ).fetchone()
+                else:
+                    linked = None
+                if not linked:
+                    raise HTTPException(
+                        409,
+                        "Source document must be linked to the canonical record person or household.",
+                    )
             verified_field = conn.execute(
                 """SELECT id FROM document_fields
                    WHERE document_id=? AND field_name=? AND verified_value=?
@@ -894,7 +1144,11 @@ def create_canonical_record(
             ),
         ).fetchone()
         if existing:
-            return {"id": existing["id"], **payload.model_dump(), "status": "duplicate"}
+            return {
+                "id": existing["id"],
+                **payload.model_copy(update={"verified_by": actor_id}).model_dump(),
+                "status": "duplicate",
+            }
 
         cur = conn.execute(
             """
@@ -915,7 +1169,7 @@ def create_canonical_record(
                 payload.record_type,
                 payload.field_name,
                 payload.value,
-                payload.verified_by,
+                actor_id,
                 payload.source_document_id,
             ),
         )
@@ -953,7 +1207,7 @@ def create_canonical_record(
             VALUES (?, ?, ?, ?, ?)
             """,
             (
-                payload.verified_by,
+                actor_id,
                 "create_canonical_record",
                 "canonical_record",
                 str(record_id),
@@ -970,7 +1224,7 @@ def create_canonical_record(
 
         return {
             "id": record_id,
-            **payload.model_dump(),
+            **payload.model_copy(update={"verified_by": actor_id}).model_dump(),
             "status": "verified",
         }
 

@@ -23,3 +23,7 @@
 
 8. **AI evaluation is mandatory.**
    OCR/extraction/entity-resolution performance will be measured against a human-verified pilot dataset.
+9. **Record retrieval is authorization-scoped.**
+   Staging/production requests require a configured Bearer-token principal and server-side person/household/document checks. Development mode remains unrestricted and must use synthetic data.
+10. **Assistant output is evidence-first.**
+    The initial assistant retrieves structured records and cites stored source IDs; it does not generate clinical facts or write to canonical records.

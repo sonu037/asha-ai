@@ -24,6 +24,7 @@ class TesseractOCRProvider:
             model="tesseract",
             processing_version="0.3.0",
             extraction_status="failed",
+            classification_needs_review=True,
             warnings=[warning],
         )
 
@@ -72,11 +73,13 @@ class TesseractOCRProvider:
                 classification = classify_document(text)
                 if classification.needs_review:
                     warnings.append(
-                        "Document type could not be classified confidently."
+                        "Rule-based document classification requires human review."
                     )
                 facts = extract_basic_facts(text)
                 return ExtractionEnvelope(
                     document_type=classification.document_type,
+                    classification_confidence=classification.confidence,
+                    classification_needs_review=classification.needs_review,
                     language=self.language,
                     raw_text=text,
                     facts=facts,

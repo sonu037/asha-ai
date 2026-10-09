@@ -502,8 +502,17 @@ def test_db_init_is_repeatable_for_fresh_and_legacy_databases(tmp_path, monkeypa
             row["name"]
             for row in conn.execute("PRAGMA index_list(documents)")
         }
+        field_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(document_fields)")
+        }
     assert "content_hash" in columns
+    assert "created_by" in columns
+    assert "extraction_provider" in columns
+    assert "classification_confidence" in columns
+    assert "classification_needs_review" in columns
     assert "idx_documents_content_hash" in indexes
+    assert "source_text" in field_columns
 
     legacy_path = tmp_path / "legacy.db"
     legacy = sqlite3.connect(legacy_path)

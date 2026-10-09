@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 
 
@@ -40,26 +41,9 @@ def classify_document(text: str) -> DocumentClassification:
             needs_review=True,
         )
 
-    # ANC / antenatal care
-    if any(
-        keyword in normalized
-        for keyword in (
-            "anc",
-            "antenatal",
-            "antenatal care",
-            "pregnancy check",
-        )
-    ):
-        return DocumentClassification(
-            document_type="anc_record",
-            confidence=0.90,
-            method="rule",
-        )
-
-    # Immunization
-    if any(
-        keyword in normalized
-        for keyword in (
+    keyword_groups = {
+        "anc_record": ("anc", "antenatal", "pregnancy check"),
+        "immunization_record": (
             "immunization",
             "immunisation",
             "vaccination",
@@ -67,113 +51,50 @@ def classify_document(text: str) -> DocumentClassification:
             "opv",
             "pentavalent",
             "measles",
-        )
-    ):
-        return DocumentClassification(
-            document_type="immunization_record",
-            confidence=0.90,
-            method="rule",
-        )
-
-    # Home visit
-    if any(
-        keyword in normalized
-        for keyword in (
-            "home visit",
-            "home visit date",
-            "visit conducted",
-        )
-    ):
-        return DocumentClassification(
-            document_type="home_visit",
-            confidence=0.90,
-            method="rule",
-        )
-
-    # NCD screening
-    if any(
-        keyword in normalized
-        for keyword in (
+        ),
+        "home_visit": ("home visit", "visit conducted"),
+        "ncd_screening": (
             "ncd",
             "blood pressure",
             "hypertension",
             "diabetes",
             "screening",
-        )
-    ):
-        return DocumentClassification(
-            document_type="ncd_screening",
-            confidence=0.90,
-            method="rule",
-        )
-
-    # Pregnancy
-    if any(
-        keyword in normalized
-        for keyword in (
+        ),
+        "pregnancy_record": (
             "pregnant",
             "pregnancy",
             "lmp",
             "expected date of delivery",
             "edd",
-        )
-    ):
-        return DocumentClassification(
-            document_type="pregnancy_record",
-            confidence=0.90,
-            method="rule",
-        )
-
-    # VHND
-    if any(
-        keyword in normalized
-        for keyword in (
-            "vhnd",
-            "village health",
-            "nutrition day",
-        )
-    ):
-        return DocumentClassification(
-            document_type="vhnd_record",
-            confidence=0.90,
-            method="rule",
-        )
-
-    # Inventory / stock
-    if any(
-        keyword in normalized
-        for keyword in (
+        ),
+        "vhnd_record": ("vhnd", "village health", "nutrition day"),
+        "inventory_record": (
             "stock",
             "inventory",
             "drug kit",
             "quantity received",
             "balance",
+        ),
+        "asha_diary": ("asha diary", "work diary"),
+    }
+    matched_types = [
+        document_type
+        for document_type, keywords in keyword_groups.items()
+        if any(
+            re.search(rf"(?<!\w){re.escape(keyword)}(?!\w)", normalized)
+            for keyword in keywords
         )
-    ):
+    ]
+    if len(matched_types) != 1:
         return DocumentClassification(
-            document_type="inventory_record",
-            confidence=0.90,
+            document_type="unknown",
+            confidence=0.0 if matched_types else 0.20,
             method="rule",
+            needs_review=True,
         )
-
-    # ASHA diary
-    if any(
-        keyword in normalized
-        for keyword in (
-            "asha diary",
-            "asha diary entry",
-            "work diary",
-        )
-    ):
-        return DocumentClassification(
-            document_type="asha_diary",
-            confidence=0.90,
-            method="rule",
-        )
-
     return DocumentClassification(
-        document_type="unknown",
-        confidence=0.20,
+        document_type=matched_types[0],
+        confidence=0.5,
         method="rule",
         needs_review=True,
     )

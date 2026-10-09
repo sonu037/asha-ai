@@ -52,3 +52,12 @@ class DocumentEventCreate(BaseModel):
     event_date: Optional[str] = None
     details: dict[str, Any] = Field(default_factory=dict)
     verified_by: str
+
+
+class AssistantQuestion(BaseModel):
+    question: str = Field(min_length=2, max_length=1000)
+
+
+class ClassificationVerification(BaseModel):
+    document_type: str
+    verified_by: str

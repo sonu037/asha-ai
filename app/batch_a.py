@@ -4,8 +4,10 @@ import sqlite3
 import uuid
 from datetime import date
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 
+from .auth import Principal, actor_for_request, person_access_predicate
+from .assistant import build_longitudinal_summary
 from .db import connection
 from .models import DocumentEventCreate
 
@@ -82,6 +84,8 @@ def auto_create_event_from_verified_document(conn, document_id, verified_by):
     ).fetchone()
     if not document or document["verification_status"] != "verified":
         return {"status": "not_ready"}
+    if document["classification_needs_review"]:
+        return {"status": "not_ready", "reason": "Document classification requires review."}
 
     link = conn.execute(
         "SELECT person_id FROM document_person_links WHERE document_id=?",
@@ -215,10 +219,15 @@ def auto_create_event_from_verified_document(conn, document_id, verified_by):
 
 
 @router.post("/documents/{document_id}/create-verified-event")
-def create_verified_event(document_id: int, payload: DocumentEventCreate):
+def create_verified_event(
+    document_id: int,
+    payload: DocumentEventCreate,
+    request: Request,
+):
     """Create a human-verified event from a verified, person-linked document."""
     if not payload.verified_by.strip():
         raise HTTPException(422, "verified_by is required")
+    actor_id = actor_for_request(request, payload.verified_by)
 
     fields = None
     event_type = None
@@ -235,6 +244,11 @@ def create_verified_event(document_id: int, payload: DocumentEventCreate):
                 raise HTTPException(
                     409,
                     "Document must be fully verified before creating an event",
+                )
+            if document["classification_needs_review"]:
+                raise HTTPException(
+                    409,
+                    "Document classification must be verified before creating an event.",
                 )
 
             unverified = conn.execute(
@@ -321,7 +335,7 @@ def create_verified_event(document_id: int, payload: DocumentEventCreate):
                     event_date,
                     details_json,
                     document_id,
-                    payload.verified_by,
+                    actor_id,
                 ),
             )
             event_id = cursor.lastrowid
@@ -330,7 +344,7 @@ def create_verified_event(document_id: int, payload: DocumentEventCreate):
                        actor_id, action, entity_type, entity_id, details_json
                    ) VALUES (?, ?, ?, ?, ?)""",
                 (
-                    payload.verified_by,
+                    actor_id,
                     "auto_create_event",
                     "event",
                     str(event_id),
@@ -367,13 +381,14 @@ def create_verified_event(document_id: int, payload: DocumentEventCreate):
         "event_type": event_type,
         "event_date": event_date,
         "verification_status": "verified",
-        "verified_by": payload.verified_by,
+        "verified_by": actor_id,
         "source_document_id": document_id,
     }
 
 
 @router.get("/search")
 def unified_search(
+    request: Request,
     q: str = Query(..., min_length=2),
     limit: int = Query(20, ge=1, le=100),
     person_id: int | None = Query(None, ge=1),
@@ -389,9 +404,16 @@ def unified_search(
     if date_from and date_to and date_from > date_to:
         raise HTTPException(422, "date_from must not be later than date_to")
     pattern = f"%{_escaped_like(query)}%"
+    principal: Principal = request.state.principal
     with connection() as conn:
         people_where = ["(LOWER(p.name) LIKE ? ESCAPE '\\' OR LOWER(p.external_id) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(h.village_id, '')) LIKE ? ESCAPE '\\')"]
         people_params = [pattern, pattern, pattern]
+        people_scope, people_scope_params = person_access_predicate(
+            principal, "p.id", "p.household_id"
+        )
+        if people_scope:
+            people_where.append(people_scope.removeprefix(" AND "))
+            people_params.extend(people_scope_params)
         if record_type and record_type != "person":
             people_where.append("1=0")
         if person_id is not None:
@@ -426,6 +448,28 @@ def unified_search(
                 ))"""
         ]
         doc_params = [pattern, pattern, pattern]
+        linked_scope, linked_scope_params = person_access_predicate(
+            principal, "sp.id", "sp.household_id"
+        )
+        if not principal.is_admin:
+            doc_where.append(
+                f"""(
+                    EXISTS (
+                        SELECT 1 FROM document_person_links auth_link
+                        JOIN people sp ON sp.id=auth_link.person_id
+                        WHERE auth_link.document_id=d.id {linked_scope}
+                    )
+                    OR (
+                        NOT EXISTS (
+                            SELECT 1 FROM document_person_links unlinked
+                            WHERE unlinked.document_id=d.id
+                        )
+                        AND d.created_by=?
+                    )
+                )"""
+            )
+            doc_params.extend(linked_scope_params)
+            doc_params.append(principal.subject)
         if record_type:
             doc_where.append("d.document_type=?")
             doc_params.append(record_type)
@@ -467,6 +511,14 @@ def unified_search(
                 ))"""
         ]
         canonical_params = [pattern, pattern, pattern]
+        canonical_scope, canonical_scope_params = person_access_predicate(
+            principal,
+            "cr.person_id",
+            "COALESCE(cr.household_id, (SELECT p.household_id FROM people p WHERE p.id=cr.person_id))",
+        )
+        if canonical_scope:
+            canonical_where.append(canonical_scope.removeprefix(" AND "))
+            canonical_params.extend(canonical_scope_params)
         if record_type:
             canonical_where.append("cr.record_type=?")
             canonical_params.append(record_type)
@@ -512,6 +564,12 @@ def unified_search(
             "(LOWER(e.event_type) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(p.name, '')) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(e.event_date, '')) LIKE ? ESCAPE '\\')"
         ]
         event_params = [pattern, pattern, pattern]
+        event_scope, event_scope_params = person_access_predicate(
+            principal, "e.person_id", "COALESCE(e.household_id, p.household_id)"
+        )
+        if event_scope:
+            event_where.append(event_scope.removeprefix(" AND "))
+            event_params.extend(event_scope_params)
         if record_type == "person":
             event_where.append("1=0")
         elif record_type:
@@ -554,7 +612,7 @@ def unified_search(
         }
 
 
-def _person_match_candidates(document_id: int):
+def _person_match_candidates(document_id: int, principal: Principal | None = None):
     with connection() as conn:
         document = conn.execute(
             "SELECT id FROM documents WHERE id=?", (document_id,)
@@ -575,13 +633,22 @@ def _person_match_candidates(document_id: int):
         )
         dob = evidence.get("date_of_birth") or evidence.get("dob")
         candidates = []
-        people = conn.execute(
-            """SELECT p.id, p.external_id, p.name, p.sex, p.date_of_birth,
-                      p.relationship_to_head, p.household_id,
-                      h.external_id AS household_external_id, h.village_id, h.address
-               FROM people p JOIN households h ON h.id=p.household_id
-               ORDER BY p.id"""
-        ).fetchall()
+        people_sql = """SELECT p.id, p.external_id, p.name, p.sex, p.date_of_birth,
+                               p.relationship_to_head, p.household_id,
+                               h.external_id AS household_external_id, h.village_id, h.address
+                        FROM people p JOIN households h ON h.id=p.household_id"""
+        people_params = []
+        if principal is not None and not principal.is_admin:
+            scope, people_params = person_access_predicate(
+                principal, "p.id", "p.household_id"
+            )
+            people_sql += (
+                " WHERE " + scope.removeprefix(" AND ")
+                if scope
+                else " WHERE 1=0"
+            )
+        people_sql += " ORDER BY p.id"
+        people = conn.execute(people_sql, people_params).fetchall()
         for person in people:
             identifier_match = bool(
                 external_id
@@ -683,8 +750,8 @@ def _person_match_candidates(document_id: int):
 
 
 @router.get("/documents/{document_id}/match-candidates")
-def document_match_candidates(document_id: int):
-    return _person_match_candidates(document_id)
+def document_match_candidates(document_id: int, request: Request):
+    return _person_match_candidates(document_id, request.state.principal)
 
 
 @router.get("/people/{person_id}/health-summary")
@@ -717,7 +784,9 @@ def health_summary(person_id: int):
         documents = conn.execute(
             """SELECT d.id, d.document_type, d.original_filename,
                       d.extraction_status, d.verification_status, d.created_at,
-                      d.external_id
+                      d.external_id, d.extraction_provider, d.extraction_model,
+                      d.classification_confidence, d.classification_needs_review,
+                      d.extraction_warnings
                FROM documents d
                JOIN document_person_links l ON l.document_id=d.id
                WHERE l.person_id=? ORDER BY d.created_at DESC, d.id DESC""",
@@ -758,6 +827,7 @@ def health_summary(person_id: int):
                 "review_required": (
                     document["verification_status"] != "verified"
                     or document["extraction_status"] != "extracted"
+                    or bool(document["classification_needs_review"])
                 ),
             }
             for document in documents
@@ -782,5 +852,6 @@ def health_summary(person_id: int):
                     document["review_required"] for document in document_items
                 ),
             },
+            **build_longitudinal_summary(conn, person_id),
             "disclaimer": "This is a record summary, not a diagnosis or clinical decision.",
         }
