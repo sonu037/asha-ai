@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 import httpx
 
 from .classification import DOCUMENT_TYPES
+from .extraction import date_validation_reason
 from .schema import ExtractionEnvelope
 from .ocr.tesseract_provider import TesseractOCRProvider
 
@@ -241,6 +242,12 @@ class OpenAICompatibleDocumentProvider(DocumentIntelligenceProvider):
                     "An AI fact without valid, matching source evidence was omitted."
                 )
                 continue
+            reason = "AI-extracted value requires human verification."
+            if field_name.strip().casefold() in {"visit_date", "lmp", "edd"}:
+                reason = (
+                    date_validation_reason(str(value))
+                    or "AI-extracted date requires human verification."
+                )
             facts.append(
                 {
                     "field_name": field_name.strip(),
@@ -249,7 +256,7 @@ class OpenAICompatibleDocumentProvider(DocumentIntelligenceProvider):
                     "source_text": source_text,
                     "method": "ai",
                     "needs_review": True,
-                    "reason": "AI-extracted value requires human verification.",
+                    "reason": reason,
                 }
             )
         language = model_output.get("language")

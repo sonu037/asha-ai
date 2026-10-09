@@ -1,3 +1,4 @@
+from datetime import date
 import re
 
 from .schema import ExtractedFact
@@ -22,6 +23,68 @@ def _add_fact(
             needs_review=True,
             reason=reason or "Rule-based extraction requires human review; confidence is not calibrated.",
         )
+    )
+
+
+def date_validation_reason(value: str) -> str | None:
+    iso_match = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", value)
+    if iso_match:
+        year, month, day = map(int, iso_match.groups())
+    else:
+        parts = re.fullmatch(r"(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})", value)
+        if not parts:
+            return "Date format is unsupported; verify the source manually."
+        first, second = map(int, parts.groups()[:2])
+        year_text = parts.group(3)
+        format_ambiguity = None
+        if first > 12 and 1 <= second <= 12:
+            day, month = first, second
+        elif second > 12 and 1 <= first <= 12:
+            month, day = first, second
+        elif first == second and 1 <= first <= 12:
+            day = month = first
+        elif 1 <= first <= 12 and 1 <= second <= 12:
+            format_ambiguity = (
+                "Ambiguous numeric date; both day/month and month/day "
+                "interpretations are possible. Human review is required."
+            )
+        else:
+            return (
+                "Invalid calendar date; original source retained for human "
+                "review and not accepted as a valid date."
+            )
+        if format_ambiguity:
+            return format_ambiguity
+        if len(year_text) == 2:
+            return (
+                "Ambiguous two-digit year; the century cannot be established "
+                "from the source. Human review is required."
+            )
+        year = int(year_text)
+    try:
+        date(year, month, day)
+    except ValueError:
+        return (
+            "Invalid calendar date; original source retained for human review "
+            "and not accepted as a valid date."
+        )
+    return None
+
+
+def _add_date_fact(
+    facts: list[ExtractedFact],
+    field_name: str,
+    value: str,
+    source_text: str,
+) -> None:
+    _add_fact(
+        facts,
+        field_name=field_name,
+        value=value,
+        source_text=source_text,
+        confidence=0.98,
+        reason=date_validation_reason(value)
+        or "Calendar date is structurally valid; verify it against the source.",
     )
 
 
@@ -112,16 +175,15 @@ def extract_basic_facts(text: str) -> list[ExtractedFact]:
     # ---------------------------------------------------------
     match = re.search(
         r"(?im)^\s*(?:visit\s+date|date\s+of\s+visit|event\s+date)\s*"
-        r"[:\-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s*$",
+        r"[:\-]?\s*(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s*$",
         text,
     )
     if match:
-        _add_fact(
+        _add_date_fact(
             facts,
-            field_name="visit_date",
-            value=match.group(1),
+            "visit_date",
+            match.group(1),
             source_text=match.group(0).strip(),
-            confidence=0.98,
         )
 
     # ---------------------------------------------------------
@@ -130,17 +192,16 @@ def extract_basic_facts(text: str) -> list[ExtractedFact]:
     match = re.search(
         r"(?im)^\s*(?:lmp|last\s+menstrual\s+period)\s*"
         r"[:\-]?\s*"
-        r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s*$",
+        r"(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s*$",
         text,
     )
 
     if match:
-        _add_fact(
+        _add_date_fact(
             facts,
-            field_name="lmp",
-            value=match.group(1),
+            "lmp",
+            match.group(1),
             source_text=match.group(0).strip(),
-            confidence=0.98,
         )
 
     # ---------------------------------------------------------
@@ -149,17 +210,16 @@ def extract_basic_facts(text: str) -> list[ExtractedFact]:
     match = re.search(
         r"(?im)^\s*(?:edd|expected\s+date\s+of\s+delivery)\s*"
         r"[:\-]?\s*"
-        r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s*$",
+        r"(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s*$",
         text,
     )
 
     if match:
-        _add_fact(
+        _add_date_fact(
             facts,
-            field_name="edd",
-            value=match.group(1),
+            "edd",
+            match.group(1),
             source_text=match.group(0).strip(),
-            confidence=0.98,
         )
 
     # ---------------------------------------------------------

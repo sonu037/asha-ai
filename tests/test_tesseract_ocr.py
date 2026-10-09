@@ -34,6 +34,29 @@ def test_tesseract_extracts_text_and_facts_when_engine_returns_text(tmp_path, mo
     ]
 
 
+def test_tesseract_reports_ambiguous_document_type(tmp_path, monkeypatch):
+    image = make_image(tmp_path / "ambiguous.png")
+    monkeypatch.setattr(
+        "app.ocr.tesseract_provider.pytesseract.image_to_string",
+        lambda *_args, **_kwargs: (
+            "ANC immunization vaccination record\nANC Visit: 1"
+        ),
+    )
+    monkeypatch.setattr(
+        "app.ocr.tesseract_provider.pytesseract.image_to_data",
+        lambda *_args, **_kwargs: {"conf": ["92"]},
+    )
+
+    result = TesseractOCRProvider().extract(str(image))
+
+    assert result.document_type == "unknown"
+    assert result.classification_needs_review is True
+    assert any(
+        "conflicting document-type signals" in warning.casefold()
+        for warning in result.warnings
+    )
+
+
 def test_blank_ocr_is_failed_and_has_no_facts(tmp_path, monkeypatch):
     image = make_image(tmp_path / "blank.png")
     monkeypatch.setattr(

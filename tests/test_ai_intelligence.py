@@ -71,6 +71,122 @@ def test_synthetic_field_extraction_requires_literal_evidence():
     assert extract_basic_facts("Name: \nANC Visit: 99\n") == []
 
 
+def test_date_candidates_reject_invalid_dates_and_flag_ambiguity():
+    impossible = extract_basic_facts("Visit Date: 39/19/2026")
+    assert len(impossible) == 1
+    assert impossible[0].field_name == "visit_date"
+    assert impossible[0].value == "39/19/2026"
+    assert impossible[0].needs_review is True
+    assert "invalid calendar date" in impossible[0].reason.casefold()
+
+    leap_day = extract_basic_facts("Visit Date: 29/02/2024")
+    assert leap_day[0].value == "29/02/2024"
+    assert "invalid calendar date" not in leap_day[0].reason.casefold()
+
+    non_leap_day = extract_basic_facts("Visit Date: 29/02/2025")
+    assert "invalid calendar date" in non_leap_day[0].reason.casefold()
+
+    ambiguous = extract_basic_facts("Visit Date: 03/04/2026")
+    assert ambiguous[0].value == "03/04/2026"
+    assert ambiguous[0].needs_review is True
+    assert "ambiguous" in ambiguous[0].reason.casefold()
+
+    day_first = extract_basic_facts("Visit Date: 13/04/2026")
+    month_first = extract_basic_facts("Visit Date: 04/13/2026")
+    assert "ambiguous" not in day_first[0].reason.casefold()
+    assert "ambiguous" not in month_first[0].reason.casefold()
+
+    same_day_month = extract_basic_facts("Visit Date: 04/04/2026")
+    assert "ambiguous" not in same_day_month[0].reason.casefold()
+
+    two_digit_year = extract_basic_facts("Visit Date: 13/04/26")
+    assert "two-digit year" in two_digit_year[0].reason.casefold()
+    impossible_two_digit = extract_basic_facts("Visit Date: 39/19/26")
+    assert "invalid calendar date" in impossible_two_digit[0].reason.casefold()
+
+
+def test_overlapping_document_signals_are_explicitly_ambiguous():
+    anc_with_shared_measurement = classify_document(
+        "ANC Record\nANC Visit: 2\nBlood Pressure: 120/80"
+    )
+    assert anc_with_shared_measurement.document_type == "anc_record"
+
+    overlap = classify_document("ANC and immunization vaccination record")
+    assert overlap.document_type == "unknown"
+    assert overlap.needs_review is True
+    assert overlap.ambiguous is True
+    assert "anc_record" in overlap.reason
+    assert "immunization_record" in overlap.reason
+
+    unknown = classify_document("unrelated blank ledger")
+    assert unknown.document_type == "unknown"
+    assert unknown.ambiguous is False
+    assert unknown.needs_review is True
+
+
+def test_invalid_or_ambiguous_dates_cannot_be_verified_without_correction(
+    client, monkeypatch
+):
+    class DateFixtureProvider:
+        def __init__(self, text):
+            self.text = text
+
+        def extract(self, _path):
+            classification = classify_document(self.text)
+            return ExtractionEnvelope(
+                document_type=classification.document_type,
+                classification_confidence=classification.confidence,
+                classification_needs_review=classification.needs_review,
+                raw_text=self.text,
+                facts=extract_basic_facts(self.text),
+                provider="synthetic_date_test",
+                extraction_status="extracted",
+            )
+
+    texts = iter(
+        (
+            "ANC Record\nVisit Date: 39/19/2026",
+            "ANC Record\nVisit Date: 03/04/2026",
+        )
+    )
+    monkeypatch.setattr(
+        "app.main.get_provider",
+        lambda: DateFixtureProvider(next(texts)),
+    )
+
+    for index, corrected in enumerate(("2026-04-03", "2026-04-03")):
+        upload = client.post(
+            "/documents",
+            files={
+                "file": (
+                    f"date-review-{index}-{uuid.uuid4().hex}.png",
+                    f"synthetic date review image {index}".encode(),
+                    "image/png",
+                )
+            },
+        )
+        assert upload.status_code == 200
+        document_id = upload.json()["document_id"]
+        field = client.get(f"/documents/{document_id}").json()["fields"][0]
+        rejected = client.post(
+            f"/documents/{document_id}/fields/{field['id']}/verify",
+            json={
+                "verified_value": field["extracted_value"],
+                "verified_by": "reviewer",
+            },
+        )
+        assert rejected.status_code == 422
+
+        verified = client.post(
+            f"/documents/{document_id}/fields/{field['id']}/verify",
+            json={
+                "verified_value": corrected,
+                "verified_by": "reviewer",
+            },
+        )
+        assert verified.status_code == 200
+
+
 def test_external_ai_provider_requires_ocr_quote_and_human_review(monkeypatch):
     source_text = "Name: Asha Example"
     response_body = {
@@ -161,6 +277,76 @@ def test_external_ai_provider_requires_ocr_quote_and_human_review(monkeypatch):
     assert result.classification_confidence == 0.92
     assert result.classification_needs_review is True
     assert any("source evidence was omitted" in warning for warning in result.warnings)
+
+
+def test_external_ai_date_candidate_preserves_ambiguity_review(monkeypatch):
+    source_text = "Visit Date: 03/04/2026"
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "document_type": "anc_record",
+                                    "classification_confidence": 0.5,
+                                    "facts": [
+                                        {
+                                            "field_name": "visit_date",
+                                            "value": "03/04/2026",
+                                            "confidence": 0.9,
+                                            "source_text": source_text,
+                                        }
+                                    ],
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+
+    class FakeClient:
+        def __init__(self, timeout):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def post(self, *_args, **_kwargs):
+            return FakeResponse()
+
+    class FakeOCR:
+        def extract(self, _path):
+            return ExtractionEnvelope(
+                document_type="unknown",
+                raw_text=source_text,
+                provider="tesseract",
+                extraction_status="extracted",
+            )
+
+    monkeypatch.setattr("app.document_intelligence.httpx.Client", FakeClient)
+    provider = OpenAICompatibleDocumentProvider(
+        "https://ai.example/v1",
+        "test-key",
+        "test-model",
+        ocr_provider=FakeOCR(),
+    )
+
+    result = provider.extract("synthetic.png")
+
+    assert len(result.facts) == 1
+    assert result.facts[0].field_name == "visit_date"
+    assert result.facts[0].value == "03/04/2026"
+    assert result.facts[0].needs_review is True
+    assert "ambiguous" in result.facts[0].reason.casefold()
 
 
 def test_upload_persists_field_source_and_provider_provenance(client, monkeypatch):

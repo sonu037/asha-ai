@@ -75,6 +75,11 @@ class TesseractOCRProvider:
                     warnings.append(
                         "Rule-based document classification requires human review."
                     )
+                if classification.reason and (
+                    classification.ambiguous
+                    or classification.document_type == "unknown"
+                ):
+                    warnings.append(classification.reason)
                 facts = extract_basic_facts(text)
                 return ExtractionEnvelope(
                     document_type=classification.document_type,

@@ -8,6 +8,8 @@ class DocumentClassification:
     confidence: float
     method: str = "rule"
     needs_review: bool = False
+    ambiguous: bool = False
+    reason: str | None = None
 
 
 DOCUMENT_TYPES = {
@@ -55,7 +57,6 @@ def classify_document(text: str) -> DocumentClassification:
         "home_visit": ("home visit", "visit conducted"),
         "ncd_screening": (
             "ncd",
-            "blood pressure",
             "hypertension",
             "diabetes",
             "screening",
@@ -91,6 +92,14 @@ def classify_document(text: str) -> DocumentClassification:
             confidence=0.0 if matched_types else 0.20,
             method="rule",
             needs_review=True,
+            ambiguous=len(matched_types) > 1,
+            reason=(
+                "Conflicting document-type signals: "
+                + ", ".join(sorted(matched_types))
+                + ". Human classification review is required."
+                if matched_types
+                else "No supported document-type signal was found."
+            ),
         )
     return DocumentClassification(
         document_type=matched_types[0],

@@ -75,6 +75,8 @@ class SyntheticEvaluationProvider:
             if case["ocr_confidence"] < 60
             else []
         )
+        if classification.ambiguous and classification.reason:
+            warnings.append(classification.reason)
         return ExtractionEnvelope(
             document_type=classification.document_type,
             classification_confidence=classification.confidence,
@@ -142,16 +144,6 @@ def _field_metrics(
     }
 
 
-def _is_explicit_conflict_alert(item: dict) -> bool:
-    warning_text = " ".join(
-        [
-            *json.loads(item["document"]["extraction_warnings"] or "[]"),
-            *(field["review_reason"] or "" for field in item["fields"]),
-        ]
-    )
-    return "conflict" in warning_text.casefold()
-
-
 def run_evaluation(client: TestClient) -> dict:
     """Upload each synthetic fixture through POST /documents and score persisted output."""
     dataset = _load_dataset()
@@ -159,6 +151,7 @@ def run_evaluation(client: TestClient) -> dict:
     provider = SyntheticEvaluationProvider(cases)
     with patch.object(main, "get_provider", return_value=provider):
         evaluated = []
+        evaluation_person_id = None
         for case in cases:
             image_bytes = _make_synthetic_png(case)
             response = client.post(
@@ -177,15 +170,52 @@ def run_evaluation(client: TestClient) -> dict:
                     f"{response.status_code}: {response.text}"
                 )
             upload = response.json()
+            link_conflicts = []
+            if case["conflict_group"]:
+                if evaluation_person_id is None:
+                    household = client.post(
+                        "/households",
+                        json={
+                            "external_id": "EVAL-HH-SYNTHETIC",
+                            "village_id": "Synthetic evaluation village",
+                        },
+                    ).json()
+                    person = client.post(
+                        "/people",
+                        json={
+                            "external_id": "EVAL-P-SYNTHETIC",
+                            "household_id": household["id"],
+                            "name": "Synthetic Evaluation Person",
+                        },
+                    ).json()
+                    evaluation_person_id = person["id"]
+                linked = client.post(
+                    f'/documents/{upload["document_id"]}/link-person',
+                    json={
+                        "person_id": evaluation_person_id,
+                        "linked_by": "synthetic-evaluation",
+                    },
+                )
+                if linked.status_code != 200:
+                    raise RuntimeError(
+                        f'{case["case_id"]} link failed with HTTP '
+                        f"{linked.status_code}: {linked.text}"
+                    )
+                link_conflicts = linked.json()["conflicts"]
             persisted = client.get(
                 f'/documents/{upload["document_id"]}'
             ).json()
             document = persisted["document"]
             fields = persisted["fields"]
-            predicted_fields = {
-                field["field_name"]: field["extracted_value"]
-                for field in fields
-            }
+            predicted_fields = {}
+            for field in fields:
+                if (
+                    field["field_name"] in {"visit_date", "event_date"}
+                    and "invalid calendar date"
+                    in (field["review_reason"] or "").casefold()
+                ):
+                    continue
+                predicted_fields[field["field_name"]] = field["extracted_value"]
             review_required = (
                 document["extraction_status"] == "failed"
                 or bool(document["classification_needs_review"])
@@ -208,6 +238,7 @@ def run_evaluation(client: TestClient) -> dict:
                     "predicted_fields": predicted_fields,
                     "review_required": review_required,
                     "evidence_ok": evidence_ok,
+                    "link_conflicts": link_conflicts,
                 }
             )
 
@@ -293,11 +324,44 @@ def run_evaluation(client: TestClient) -> dict:
         or item["case"]["category"] == "invalid_date"
         or "visit_date" in item["case"]["expected_fields"]
     ]
-    exact_dates = sum(
-        item["predicted_fields"].get("visit_date")
-        == item["case"]["expected_fields"].get("visit_date")
-        for item in date_cases
-    )
+    date_results = []
+    for item in date_cases:
+        case = item["case"]
+        date_fact = next(
+            (
+                field
+                for field in item["fields"]
+                if field["field_name"] == "visit_date"
+            ),
+            None,
+        )
+        reason = (
+            (date_fact["review_reason"] or "").casefold()
+            if date_fact
+            else ""
+        )
+        if case.get("invalid_dates"):
+            correct = (
+                date_fact is not None
+                and "invalid calendar date" in reason
+                and date_fact["extracted_value"] in case["invalid_dates"]
+                and "visit_date" not in item["predicted_fields"]
+            )
+        elif "date_ambiguity" in case:
+            correct = (
+                date_fact is not None
+                and date_fact["extracted_value"]
+                == case["expected_fields"].get("visit_date")
+                and "ambiguous" in reason
+            )
+        else:
+            correct = (
+                item["predicted_fields"].get("visit_date")
+                == case["expected_fields"].get("visit_date")
+                and "ambiguous" not in reason
+            )
+        date_results.append(correct)
+    exact_dates = sum(date_results)
     expected_review_cases = [
         item for item in evaluated if item["case"]["expected_review"] is not None
     ]
@@ -386,10 +450,7 @@ def run_evaluation(client: TestClient) -> dict:
             conflict_groups[item["case"]["conflict_group"]].append(item)
     conflict_results = []
     for group_name, group in sorted(conflict_groups.items()):
-        flagged = any(
-            _is_explicit_conflict_alert(item)
-            for item in group
-        )
+        flagged = any(item["link_conflicts"] for item in group)
         conflict_results.append(
             {
                 "group": group_name,
@@ -530,6 +591,23 @@ def run_evaluation(client: TestClient) -> dict:
                 "denominator_method": (
                     "Uploaded fixtures with extraction_status=extracted; "
                     "unreadable OCR failures excluded, unknown remains a valid class."
+                ),
+            },
+            "invalid_date_rejection": {
+                "invalid_date_cases": sum(
+                    bool(item["case"].get("invalid_dates"))
+                    for item in evaluated
+                ),
+                "rejected_as_valid_dates": sum(
+                    bool(item["case"].get("invalid_dates"))
+                    and "visit_date" not in item["predicted_fields"]
+                    and any(
+                        field["field_name"] == "visit_date"
+                        and "invalid calendar date"
+                        in (field["review_reason"] or "").casefold()
+                        for field in item["fields"]
+                    )
+                    for item in evaluated
                 ),
             },
             "field_level": {

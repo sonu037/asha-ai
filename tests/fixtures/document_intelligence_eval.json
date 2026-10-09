@@ -7,17 +7,17 @@
       "category": "anc",
       "ocr_status": "extracted",
       "ocr_confidence": 92,
-      "ocr_text": "ANC Record\nANC Visit: 2\nVisit Date: 12/04/2026\nBlood Pressure: 120/80\nWeight: 52.5 kg",
+      "ocr_text": "ANC Record\nANC Visit: 2\nVisit Date: 14/04/2026\nBlood Pressure: 120/80\nWeight: 52.5 kg",
       "expected_document_type": "anc_record",
       "expected_fields": {
         "anc_visit": "2",
-        "visit_date": "12/04/2026",
+        "visit_date": "14/04/2026",
         "blood_pressure": "120/80",
         "weight_kg": "52.5"
       },
       "expected_evidence": {
         "anc_visit": "ANC Visit: 2",
-        "visit_date": "Visit Date: 12/04/2026",
+        "visit_date": "Visit Date: 14/04/2026",
         "blood_pressure": "Blood Pressure: 120/80",
         "weight_kg": "Weight: 52.5 kg"
       },
@@ -31,15 +31,15 @@
       "category": "missing_field",
       "ocr_status": "extracted",
       "ocr_confidence": 88,
-      "ocr_text": "ANC Record\nANC Visit: 1\nVisit Date: 02/06/2026",
+      "ocr_text": "ANC Record\nANC Visit: 1\nVisit Date: 16/06/2026",
       "expected_document_type": "anc_record",
       "expected_fields": {
         "anc_visit": "1",
-        "visit_date": "02/06/2026"
+        "visit_date": "16/06/2026"
       },
       "expected_evidence": {
         "anc_visit": "ANC Visit: 1",
-        "visit_date": "Visit Date: 02/06/2026"
+        "visit_date": "Visit Date: 16/06/2026"
       },
       "expected_review": true,
       "expected_outcome": "incomplete_candidates_for_human_review",
@@ -102,7 +102,8 @@
         "anc_visit": "1"
       },
       "expected_evidence": {
-        "anc_visit": "ANC Visit: 1"
+        "anc_visit": "ANC Visit: 1",
+        "visit_date": "Visit Date: 39/19/2026"
       },
       "expected_review": true,
       "expected_outcome": "reject_impossible_calendar_date_but_retain_safe_fields",
@@ -135,16 +136,16 @@
       "category": "conflicting_values",
       "ocr_status": "extracted",
       "ocr_confidence": 89,
-      "ocr_text": "ANC Record\nANC Visit: 2\nVisit Date: 10/08/2026\nBlood Pressure: 110/70",
+      "ocr_text": "ANC Record\nANC Visit: 2\nVisit Date: 18/08/2026\nBlood Pressure: 110/70",
       "expected_document_type": "anc_record",
       "expected_fields": {
         "anc_visit": "2",
-        "visit_date": "10/08/2026",
+        "visit_date": "18/08/2026",
         "blood_pressure": "110/70"
       },
       "expected_evidence": {
         "anc_visit": "ANC Visit: 2",
-        "visit_date": "Visit Date: 10/08/2026",
+        "visit_date": "Visit Date: 18/08/2026",
         "blood_pressure": "Blood Pressure: 110/70"
       },
       "expected_review": true,
@@ -157,16 +158,16 @@
       "category": "conflicting_values",
       "ocr_status": "extracted",
       "ocr_confidence": 89,
-      "ocr_text": "ANC Record\nANC Visit: 2\nVisit Date: 10/08/2026\nBlood Pressure: 150/90",
+      "ocr_text": "ANC Record\nANC Visit: 2\nVisit Date: 18/08/2026\nBlood Pressure: 150/90",
       "expected_document_type": "anc_record",
       "expected_fields": {
         "anc_visit": "2",
-        "visit_date": "10/08/2026",
+        "visit_date": "18/08/2026",
         "blood_pressure": "150/90"
       },
       "expected_evidence": {
         "anc_visit": "ANC Visit: 2",
-        "visit_date": "Visit Date: 10/08/2026",
+        "visit_date": "Visit Date: 18/08/2026",
         "blood_pressure": "Blood Pressure: 150/90"
       },
       "expected_review": true,

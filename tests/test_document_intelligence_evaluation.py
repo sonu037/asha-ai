@@ -17,38 +17,31 @@ def test_synthetic_evaluation_reports_pipeline_metrics_and_failures(client):
     assert report["execution"]["model"] == "none; no model request made"
     assert report["execution"]["uploaded_documents"] == 9
     assert report["execution"]["duplicate_replays"] == 1
-    assert metrics["classification"]["correct"] == 5
+    assert metrics["classification"]["correct"] == 8
     assert metrics["classification"]["denominator"] == 8
-    assert metrics["classification"]["accuracy"] == 0.625
+    assert metrics["classification"]["accuracy"] == 1
     assert metrics["field_level"]["true_positive"] == 18
-    assert metrics["field_level"]["false_positive"] == 1
+    assert metrics["field_level"]["false_positive"] == 0
     assert metrics["field_level"]["false_negative"] == 0
-    assert round(metrics["field_level"]["exact_field_value_f1"], 3) == 0.973
-    assert metrics["dates"]["exact_decisions_correct"] == 6
+    assert metrics["field_level"]["exact_field_value_f1"] == 1
+    assert metrics["dates"]["exact_decisions_correct"] == 7
     assert metrics["dates"]["denominator"] == 7
+    assert metrics["invalid_date_rejection"]["rejected_as_valid_dates"] == 1
     assert metrics["evidence_grounding"]["grounded_facts"] == 19
     assert metrics["evidence_grounding"]["predicted_facts"] == 19
-    assert metrics["source_evidence_exactness"]["true_positive"] == 18
-    assert metrics["source_evidence_exactness"]["false_positive"] == 1
+    assert metrics["source_evidence_exactness"]["true_positive"] == 19
+    assert metrics["source_evidence_exactness"]["false_positive"] == 0
     assert metrics["human_review_routing"]["correct"] == 9
     assert metrics["unsupported_upload"]["http_status"] == 415
-    assert metrics["cross_document_conflicts"]["explicitly_flagged"] == 0
+    assert metrics["cross_document_conflicts"]["explicitly_flagged"] == 1
     assert metrics["duplicate_processing"]["replay_calls_processed_again"] == 0
-    assert metrics["ambiguous_date_review"]["ambiguities_explicitly_identified"] == 0
+    assert metrics["ambiguous_date_review"]["ambiguities_explicitly_identified"] == 1
     assert metrics["low_ocr_confidence_flagging"]["low_confidence_cases"] == 1
     assert (
         metrics["low_ocr_confidence_flagging"]["cases_with_low_confidence_warning"]
         == 1
     )
-    assert any(
-        failure["issue"] == "date_ambiguity_not_explicitly_identified"
-        for failure in report["failures"]
-    )
-    assert any(
-        failure["issue"] == "unexpected_field"
-        and failure["field"] == "visit_date"
-        for failure in report["failures"]
-    )
+    assert report["failures"] == []
 
 
 def test_upload_rejects_missing_and_unsupported_document_inputs(client):

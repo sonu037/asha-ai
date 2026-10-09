@@ -78,6 +78,25 @@ CREATE TABLE IF NOT EXISTS document_person_links (
  FOREIGN KEY (document_id) REFERENCES documents(id),
  FOREIGN KEY (person_id) REFERENCES people(id)
 );
+CREATE TABLE IF NOT EXISTS document_field_conflicts (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ person_id INTEGER NOT NULL,
+ field_name TEXT NOT NULL,
+ field_id_a INTEGER NOT NULL,
+ document_id_a INTEGER NOT NULL,
+ field_value_a TEXT NOT NULL,
+ field_id_b INTEGER NOT NULL,
+ document_id_b INTEGER NOT NULL,
+ field_value_b TEXT NOT NULL,
+ status TEXT NOT NULL DEFAULT 'open',
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ UNIQUE(field_id_a, field_id_b),
+ FOREIGN KEY (person_id) REFERENCES people(id),
+ FOREIGN KEY (field_id_a) REFERENCES document_fields(id),
+ FOREIGN KEY (document_id_a) REFERENCES documents(id),
+ FOREIGN KEY (field_id_b) REFERENCES document_fields(id),
+ FOREIGN KEY (document_id_b) REFERENCES documents(id)
+);
 CREATE TABLE IF NOT EXISTS audit_log (
  id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id TEXT, action TEXT NOT NULL, entity_type TEXT NOT NULL,
  entity_id TEXT NOT NULL, details_json TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP

@@ -1,0 +1,300 @@
+{
+  "dataset_id": "asha-generated-scan-evaluation-v1",
+  "generation_method": "Pillow renders synthetic ASHA/ANC text with a Windows-installed font, then applies only the per-case listed deterministic image transforms. No real beneficiary information is used.",
+  "cases": [
+    {
+      "case_id": "clear_standard",
+      "quality_category": "clear_readable",
+      "width": 1400,
+      "height": 900,
+      "font_size": 38,
+      "expected_document_type": "anc_record",
+      "lines": [
+        "ANC Record",
+        "ANC Visit: 2",
+        "Visit Date: 14/04/2026",
+        "Blood Pressure: 120/80",
+        "Weight: 52 kg"
+      ],
+      "expected_fields": {
+        "anc_visit": "2",
+        "visit_date": "14/04/2026",
+        "blood_pressure": "120/80",
+        "weight_kg": "52"
+      },
+      "date_status": {
+        "visit_date": "valid_unambiguous"
+      }
+    },
+    {
+      "case_id": "clear_small_text",
+      "quality_category": "small_text",
+      "width": 1100,
+      "height": 750,
+      "font_size": 24,
+      "expected_document_type": "anc_record",
+      "lines": [
+        "ANC Record",
+        "ANC Visit: 1",
+        "Visit Date: 16/06/2026",
+        "Blood Pressure: 118/76"
+      ],
+      "expected_fields": {
+        "anc_visit": "1",
+        "visit_date": "16/06/2026",
+        "blood_pressure": "118/76"
+      },
+      "date_status": {
+        "visit_date": "valid_unambiguous"
+      }
+    },
+    {
+      "case_id": "low_resolution",
+      "quality_category": "low_resolution",
+      "width": 680,
+      "height": 440,
+      "font_size": 25,
+      "expected_document_type": "anc_record",
+      "lines": [
+        "ANC Record",
+        "ANC Visit: 3",
+        "Visit Date: 15/07/2026",
+        "Weight: 49 kg"
+      ],
+      "expected_fields": {
+        "anc_visit": "3",
+        "visit_date": "15/07/2026",
+        "weight_kg": "49"
+      },
+      "date_status": {
+        "visit_date": "valid_unambiguous"
+      }
+    },
+    {
+      "case_id": "slightly_skewed",
+      "quality_category": "skew",
+      "width": 1400,
+      "height": 900,
+      "font_size": 38,
+      "rotation_degrees": 3,
+      "expected_document_type": "anc_record",
+      "lines": [
+        "ANC Record",
+        "ANC Visit: 2",
+        "Visit Date: 17/08/2026",
+        "Blood Pressure: 122/78"
+      ],
+      "expected_fields": {
+        "anc_visit": "2",
+        "visit_date": "17/08/2026",
+        "blood_pressure": "122/78"
+      },
+      "date_status": {
+        "visit_date": "valid_unambiguous"
+      }
+    },
+    {
+      "case_id": "mild_blur",
+      "quality_category": "mild_blur",
+      "width": 1400,
+      "height": 900,
+      "font_size": 38,
+      "blur_radius": 0.8,
+      "expected_document_type": "anc_record",
+      "lines": [
+        "ANC Record",
+        "ANC Visit: 4",
+        "Visit Date: 19/09/2026",
+        "Blood Pressure: 116/74"
+      ],
+      "expected_fields": {
+        "anc_visit": "4",
+        "visit_date": "19/09/2026",
+        "blood_pressure": "116/74"
+      },
+      "date_status": {
+        "visit_date": "valid_unambiguous"
+      }
+    },
+    {
+      "case_id": "jpeg_compressed",
+      "quality_category": "compression",
+      "width": 1400,
+      "height": 900,
+      "font_size": 38,
+      "jpeg_quality": 35,
+      "expected_document_type": "anc_record",
+      "lines": [
+        "ANC Record",
+        "ANC Visit: 1",
+        "Visit Date: 13/10/2026",
+        "Weight: 54 kg"
+      ],
+      "expected_fields": {
+        "anc_visit": "1",
+        "visit_date": "13/10/2026",
+        "weight_kg": "54"
+      },
+      "date_status": {
+        "visit_date": "valid_unambiguous"
+      }
+    },
+    {
+      "case_id": "low_contrast",
+      "quality_category": "low_contrast",
+      "width": 1400,
+      "height": 900,
+      "font_size": 38,
+      "text_color": 155,
+      "expected_document_type": "anc_record",
+      "lines": [
+        "ANC Record",
+        "ANC Visit: 2",
+        "Visit Date: 14/11/2026",
+        "Blood Pressure: 124/82"
+      ],
+      "expected_fields": {
+        "anc_visit": "2",
+        "visit_date": "14/11/2026",
+        "blood_pressure": "124/82"
+      },
+      "date_status": {
+        "visit_date": "valid_unambiguous"
+      }
+    },
+    {
+      "case_id": "missing_fields",
+      "quality_category": "missing_fields",
+      "width": 1400,
+      "height": 900,
+      "font_size": 38,
+      "expected_document_type": "anc_record",
+      "lines": [
+        "ANC Record",
+        "ANC Visit: 1",
+        "Visit Date: 16/12/2026"
+      ],
+      "expected_fields": {
+        "anc_visit": "1",
+        "visit_date": "16/12/2026"
+      },
+      "expected_absent_fields": [
+        "blood_pressure",
+        "weight_kg"
+      ],
+      "date_status": {
+        "visit_date": "valid_unambiguous"
+      }
+    },
+    {
+      "case_id": "ambiguous_date",
+      "quality_category": "ambiguous_date",
+      "width": 1400,
+      "height": 900,
+      "font_size": 38,
+      "expected_document_type": "anc_record",
+      "lines": [
+        "ANC Record",
+        "ANC Visit: 2",
+        "Visit Date: 03/04/2026",
+        "Blood Pressure: 120/80"
+      ],
+      "expected_fields": {
+        "anc_visit": "2",
+        "visit_date": "03/04/2026",
+        "blood_pressure": "120/80"
+      },
+      "date_status": {
+        "visit_date": "ambiguous"
+      }
+    },
+    {
+      "case_id": "impossible_date",
+      "quality_category": "impossible_date",
+      "width": 1400,
+      "height": 900,
+      "font_size": 38,
+      "expected_document_type": "anc_record",
+      "lines": [
+        "ANC Record",
+        "ANC Visit: 1",
+        "Visit Date: 39/19/2026"
+      ],
+      "expected_fields": {
+        "anc_visit": "1"
+      },
+      "expected_absent_fields": [
+        "visit_date"
+      ],
+      "expected_invalid_dates": {
+        "visit_date": "39/19/2026"
+      },
+      "date_status": {
+        "visit_date": "invalid"
+      }
+    },
+    {
+      "case_id": "same_visit_pressure_a",
+      "quality_category": "conflicting_values",
+      "width": 1400,
+      "height": 900,
+      "font_size": 38,
+      "person_group": "synthetic_person_one",
+      "expected_document_type": "anc_record",
+      "lines": [
+        "ANC Record",
+        "ANC Visit: 2",
+        "Visit Date: 18/08/2026",
+        "Blood Pressure: 110/70"
+      ],
+      "expected_fields": {
+        "anc_visit": "2",
+        "visit_date": "18/08/2026",
+        "blood_pressure": "110/70"
+      },
+      "date_status": {
+        "visit_date": "valid_unambiguous"
+      }
+    },
+    {
+      "case_id": "same_visit_pressure_b",
+      "quality_category": "conflicting_values",
+      "width": 1400,
+      "height": 900,
+      "font_size": 38,
+      "person_group": "synthetic_person_one",
+      "expected_document_type": "anc_record",
+      "lines": [
+        "ANC Record",
+        "ANC Visit: 2",
+        "Visit Date: 18/08/2026",
+        "Blood Pressure: 150/90"
+      ],
+      "expected_fields": {
+        "anc_visit": "2",
+        "visit_date": "18/08/2026",
+        "blood_pressure": "150/90"
+      },
+      "date_status": {
+        "visit_date": "valid_unambiguous"
+      }
+    },
+    {
+      "case_id": "unreadable_blank_page",
+      "quality_category": "unreadable",
+      "width": 1400,
+      "height": 900,
+      "font_size": 38,
+      "unreadable": true,
+      "expected_document_type": "unknown",
+      "lines": [],
+      "expected_fields": {},
+      "expected_extraction_status": "failed"
+    }
+  ],
+  "unsupported_document": {
+    "filename": "synthetic-unsupported.pdf",
+    "content": "synthetic unsupported-format marker",
+    "expected_http_status": 415
+  }
+}

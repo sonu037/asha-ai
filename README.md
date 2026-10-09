@@ -60,6 +60,19 @@ and duplicate-handling paths, not real scan-reading performance. See
 [`docs/DOCUMENT_INTELLIGENCE_VALIDATION.md`](docs/DOCUMENT_INTELLIGENCE_VALIDATION.md)
 for the measured results and limitations.
 
+For the separate generated-image evaluation, use the actual local Tesseract
+executable (this changes `pytesseract` configuration in that process only):
+
+```powershell
+python -m scripts.evaluate_real_ocr `
+  --tesseract-executable "C:\Program Files\Tesseract-OCR\tesseract.exe"
+```
+
+The runner submits generated image pixels through `POST /documents`; it refuses
+to substitute fixture transcripts if Tesseract cannot be executed. It uses a
+temporary database and storage directory and leaves the machine's `PATH`
+unchanged.
+
 ## Document-intelligence providers
 
 The default provider is local Tesseract OCR plus deterministic field rules.

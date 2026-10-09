@@ -28,6 +28,11 @@ from .batch_a import (
 from .classification import DOCUMENT_TYPES
 from .assistant_routes import router as assistant_router
 from .document_intelligence import tesseract_provider
+from .document_conflicts import (
+    conflicts_for_document,
+    detect_linked_document_conflicts,
+)
+from .extraction import date_validation_reason
 
 
 app = FastAPI(
@@ -455,6 +460,7 @@ def get_document(document_id: int):
         return {
             "document": dict(doc),
             "fields": [dict(field) for field in fields],
+            "conflicts": conflicts_for_document(conn, document_id),
         }
 
 
@@ -603,12 +609,18 @@ def link_document_to_person(
                 ),
             ),
         )
+        conflicts = detect_linked_document_conflicts(
+            conn,
+            document_id,
+            payload.person_id,
+        )
 
         return {
             "status": "linked",
             "document_id": document_id,
             "person_id": payload.person_id,
             "linked_by": actor_id,
+            "conflicts": conflicts,
         }
 @app.post("/documents/{document_id}/create-event")
 def create_event_from_document(
@@ -786,6 +798,24 @@ def verify_field(
     actor_id = actor_for_request(request, payload.verified_by)
     automatic_event = {"status": "not_ready"}
     with connection() as conn:
+        field = conn.execute(
+            """
+            SELECT field_name
+            FROM document_fields
+            WHERE id=? AND document_id=?
+            """,
+            (field_id, document_id),
+        ).fetchone()
+        if field is None:
+            raise HTTPException(404, "Field not found")
+        if field["field_name"] in {"visit_date", "lmp", "edd"}:
+            validation_reason = date_validation_reason(payload.verified_value)
+            if validation_reason is not None:
+                raise HTTPException(
+                    422,
+                    "A date cannot be verified in an invalid or ambiguous format. "
+                    "Enter a valid, unambiguous date such as YYYY-MM-DD.",
+                )
         cur = conn.execute(
             """
             UPDATE document_fields
