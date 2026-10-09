@@ -1,0 +1,198 @@
+{
+  "dataset_id": "asha-synthetic-document-evaluation-v1",
+  "privacy": "Synthetic text only; no beneficiary or patient records.",
+  "documents": [
+    {
+      "case_id": "anc_basic",
+      "category": "anc",
+      "ocr_status": "extracted",
+      "ocr_confidence": 92,
+      "ocr_text": "ANC Record\nANC Visit: 2\nVisit Date: 12/04/2026\nBlood Pressure: 120/80\nWeight: 52.5 kg",
+      "expected_document_type": "anc_record",
+      "expected_fields": {
+        "anc_visit": "2",
+        "visit_date": "12/04/2026",
+        "blood_pressure": "120/80",
+        "weight_kg": "52.5"
+      },
+      "expected_evidence": {
+        "anc_visit": "ANC Visit: 2",
+        "visit_date": "Visit Date: 12/04/2026",
+        "blood_pressure": "Blood Pressure: 120/80",
+        "weight_kg": "Weight: 52.5 kg"
+      },
+      "expected_review": true,
+      "expected_outcome": "extract_candidates_for_human_review",
+      "duplicate_replay": true,
+      "conflict_group": null
+    },
+    {
+      "case_id": "anc_missing_measurement",
+      "category": "missing_field",
+      "ocr_status": "extracted",
+      "ocr_confidence": 88,
+      "ocr_text": "ANC Record\nANC Visit: 1\nVisit Date: 02/06/2026",
+      "expected_document_type": "anc_record",
+      "expected_fields": {
+        "anc_visit": "1",
+        "visit_date": "02/06/2026"
+      },
+      "expected_evidence": {
+        "anc_visit": "ANC Visit: 1",
+        "visit_date": "Visit Date: 02/06/2026"
+      },
+      "expected_review": true,
+      "expected_outcome": "incomplete_candidates_for_human_review",
+      "missing_fields": [
+        "blood_pressure",
+        "weight_kg"
+      ],
+      "duplicate_replay": false,
+      "conflict_group": null
+    },
+    {
+      "case_id": "anc_low_ocr_confidence",
+      "category": "poor_quality_scan",
+      "ocr_status": "extracted",
+      "ocr_confidence": 35,
+      "ocr_text": "ANC Record\nANC Visit: 3\nVisit Date: 15/07/2026",
+      "expected_document_type": "anc_record",
+      "expected_fields": {
+        "anc_visit": "3",
+        "visit_date": "15/07/2026"
+      },
+      "expected_evidence": {
+        "anc_visit": "ANC Visit: 3",
+        "visit_date": "Visit Date: 15/07/2026"
+      },
+      "expected_review": true,
+      "expected_outcome": "low_confidence_candidates_for_human_review",
+      "duplicate_replay": false,
+      "conflict_group": null
+    },
+    {
+      "case_id": "ambiguous_date",
+      "category": "ambiguous_date",
+      "ocr_status": "extracted",
+      "ocr_confidence": 91,
+      "ocr_text": "ANC Record\nANC Visit: 2\nVisit Date: 04/05/2026",
+      "expected_document_type": "anc_record",
+      "expected_fields": {
+        "anc_visit": "2",
+        "visit_date": "04/05/2026"
+      },
+      "expected_evidence": {
+        "anc_visit": "ANC Visit: 2",
+        "visit_date": "Visit Date: 04/05/2026"
+      },
+      "expected_review": true,
+      "expected_outcome": "date_candidate_with_unresolved_locale_ambiguity",
+      "date_ambiguity": "Both day/month and month/day interpretations are possible.",
+      "duplicate_replay": false,
+      "conflict_group": null
+    },
+    {
+      "case_id": "invalid_date",
+      "category": "invalid_date",
+      "ocr_status": "extracted",
+      "ocr_confidence": 90,
+      "ocr_text": "ANC Record\nANC Visit: 1\nVisit Date: 39/19/2026",
+      "expected_document_type": "anc_record",
+      "expected_fields": {
+        "anc_visit": "1"
+      },
+      "expected_evidence": {
+        "anc_visit": "ANC Visit: 1"
+      },
+      "expected_review": true,
+      "expected_outcome": "reject_impossible_calendar_date_but_retain_safe_fields",
+      "invalid_dates": [
+        "39/19/2026"
+      ],
+      "duplicate_replay": false,
+      "conflict_group": null
+    },
+    {
+      "case_id": "ambiguous_document_type",
+      "category": "ambiguous_document",
+      "ocr_status": "extracted",
+      "ocr_confidence": 84,
+      "ocr_text": "ANC immunization vaccination record\nANC Visit: 1",
+      "expected_document_type": "unknown",
+      "expected_fields": {
+        "anc_visit": "1"
+      },
+      "expected_evidence": {
+        "anc_visit": "ANC Visit: 1"
+      },
+      "expected_review": true,
+      "expected_outcome": "uncertain_classification_and_review_fields",
+      "duplicate_replay": false,
+      "conflict_group": null
+    },
+    {
+      "case_id": "conflict_visit_one",
+      "category": "conflicting_values",
+      "ocr_status": "extracted",
+      "ocr_confidence": 89,
+      "ocr_text": "ANC Record\nANC Visit: 2\nVisit Date: 10/08/2026\nBlood Pressure: 110/70",
+      "expected_document_type": "anc_record",
+      "expected_fields": {
+        "anc_visit": "2",
+        "visit_date": "10/08/2026",
+        "blood_pressure": "110/70"
+      },
+      "expected_evidence": {
+        "anc_visit": "ANC Visit: 2",
+        "visit_date": "Visit Date: 10/08/2026",
+        "blood_pressure": "Blood Pressure: 110/70"
+      },
+      "expected_review": true,
+      "expected_outcome": "candidate_with_cross_document_conflict_review",
+      "duplicate_replay": false,
+      "conflict_group": "same_visit_conflict"
+    },
+    {
+      "case_id": "conflict_visit_two",
+      "category": "conflicting_values",
+      "ocr_status": "extracted",
+      "ocr_confidence": 89,
+      "ocr_text": "ANC Record\nANC Visit: 2\nVisit Date: 10/08/2026\nBlood Pressure: 150/90",
+      "expected_document_type": "anc_record",
+      "expected_fields": {
+        "anc_visit": "2",
+        "visit_date": "10/08/2026",
+        "blood_pressure": "150/90"
+      },
+      "expected_evidence": {
+        "anc_visit": "ANC Visit: 2",
+        "visit_date": "Visit Date: 10/08/2026",
+        "blood_pressure": "Blood Pressure: 150/90"
+      },
+      "expected_review": true,
+      "expected_outcome": "candidate_with_cross_document_conflict_review",
+      "duplicate_replay": false,
+      "conflict_group": "same_visit_conflict"
+    },
+    {
+      "case_id": "unreadable_ocr",
+      "category": "unreadable_scan",
+      "ocr_status": "failed",
+      "ocr_confidence": null,
+      "ocr_text": "",
+      "expected_document_type": "unknown",
+      "expected_fields": {},
+      "expected_evidence": {},
+      "expected_review": true,
+      "expected_outcome": "explicit_extraction_failure_no_facts",
+      "duplicate_replay": false,
+      "conflict_group": null
+    }
+  ],
+  "unsupported_upload": {
+    "filename": "unsupported.pdf",
+    "content": "synthetic unsupported file marker",
+    "expected_http_status": 415,
+    "expected_outcome": "reject_without_processing"
+  }
+}

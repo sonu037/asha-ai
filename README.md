@@ -44,6 +44,22 @@ fields are generated.
 The upload API currently accepts JPEG, PNG, and WebP images up to 10 MiB. PDF
 and HEIC conversion are not implemented in this OCR path.
 
+## Synthetic document-intelligence evaluation
+
+Run the controlled synthetic evaluation from the repository root:
+
+```powershell
+python -m scripts.evaluate_document_intelligence
+```
+
+It generates temporary synthetic images, submits them through `POST /documents`,
+and scores the persisted results. The fixture OCR adapter supplies labeled
+synthetic transcripts; it does **not** run OCR or call a model. Results measure
+the upload, rule-classification/extraction, evidence-persistence, review-flag,
+and duplicate-handling paths, not real scan-reading performance. See
+[`docs/DOCUMENT_INTELLIGENCE_VALIDATION.md`](docs/DOCUMENT_INTELLIGENCE_VALIDATION.md)
+for the measured results and limitations.
+
 ## Document-intelligence providers
 
 The default provider is local Tesseract OCR plus deterministic field rules.
