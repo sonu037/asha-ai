@@ -1,4 +1,5 @@
 import io
+import uuid
 import pytest
 from fastapi.testclient import TestClient
 
@@ -46,7 +47,7 @@ def test_end_to_end_core_workflow(client):
 
     # 4. Upload a sample image.
     # v0.2 does not have real OCR/vision yet.
-    sample = b"ASHA TEST DOCUMENT"
+    sample = f"ASHA TEST DOCUMENT {uuid.uuid4()}".encode()
 
     r = client.post(
         "/documents",
@@ -71,7 +72,7 @@ def test_end_to_end_core_workflow(client):
     stored = r.json()
 
     assert stored["document"]["id"] == document_id
-    assert stored["document"]["extraction_status"] == "extracted"
+    assert stored["document"]["extraction_status"] == "failed"
 
     # v0.2 intentionally has no real OCR/vision provider.
     assert stored["fields"] == []

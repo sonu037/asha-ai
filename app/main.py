@@ -1,5 +1,6 @@
-﻿import json
-import shutil
+import hashlib
+import json
+import sqlite3
 import uuid
 from pathlib import Path
 
@@ -17,6 +18,11 @@ from .models import (
     DocumentEventCreate,
 )
 from .ai import provider
+from .batch_a import (
+    _person_match_candidates,
+    auto_create_event_from_verified_document,
+    router as batch_a_router,
+)
 from .document_intelligence import tesseract_provider
 
 
@@ -25,6 +31,8 @@ app = FastAPI(
     version="0.2.0",
     description="AI-first ASHA documentation and record intelligence platform.",
 )
+
+app.include_router(batch_a_router)
 
 
 @app.on_event("startup")
@@ -175,46 +183,79 @@ def get_person(person_id: int):
 async def upload_document(
     file: UploadFile = File(...),
 ):
-    doc_id = str(uuid.uuid4())
+    content_digest = hashlib.sha256()
+    while chunk := await file.read(1024 * 1024):
+        content_digest.update(chunk)
+    content_hash = content_digest.hexdigest()
+    with connection() as conn:
+        existing = conn.execute(
+            "SELECT id, external_id FROM documents WHERE content_hash=?",
+            (content_hash,),
+        ).fetchone()
+    if existing:
+        return {
+            "status": "duplicate",
+            "document_id": existing["id"],
+            "external_id": existing["external_id"],
+            "duplicate_of": existing["id"],
+        }
 
+    doc_id = str(uuid.uuid4())
     suffix = Path(
         file.filename or ""
     ).suffix.lower()
-
     target = DOCUMENT_DIR / f"{doc_id}{suffix}"
-
-    with target.open("wb") as f:
-        shutil.copyfileobj(
-            file.file,
-            f,
-        )
+    await file.seek(0)
+    with target.open("wb") as stored_file:
+        while chunk := await file.read(1024 * 1024):
+            stored_file.write(chunk)
 
     external_id = (
         f"ASHA-DOC-{doc_id[:8].upper()}"
     )
 
-    with connection() as conn:
-        cur = conn.execute(
-            """
-            INSERT INTO documents (
-                external_id,
-                original_filename,
-                storage_path
-            )
-            VALUES (?, ?, ?)
-            """,
-            (
-                external_id,
-                file.filename,
-                str(
-                    target.relative_to(
-                        DOCUMENT_DIR.parent
-                    )
+    try:
+        with connection() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO documents (
+                    external_id,
+                    original_filename,
+                    storage_path,
+                    content_hash
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    external_id,
+                    file.filename,
+                    str(
+                        target.relative_to(
+                            DOCUMENT_DIR.parent
+                        )
+                    ),
+                    content_hash,
                 ),
-            ),
-        )
-
-        numeric_id = cur.lastrowid
+            )
+            numeric_id = cur.lastrowid
+    except sqlite3.IntegrityError:
+        target.unlink(missing_ok=True)
+        with connection() as conn:
+            existing = conn.execute(
+                "SELECT id, external_id FROM documents WHERE content_hash=?",
+                (content_hash,),
+            ).fetchone()
+        if not existing:
+            raise
+        return {
+            "status": "duplicate",
+            "document_id": existing["id"],
+            "external_id": existing["external_id"],
+            "duplicate_of": existing["id"],
+        }
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
 
     result = tesseract_provider.extract(
         str(target)
@@ -228,13 +269,14 @@ async def upload_document(
                 document_type=?,
                 language=?,
                 ocr_text=?,
-                extraction_status='extracted'
+                extraction_status=?
             WHERE id=?
             """,
             (
                 result.document_type,
                 result.language,
                 result.raw_text,
+                result.extraction_status,
                 numeric_id,
             ),
         )
@@ -273,9 +315,11 @@ async def upload_document(
             )
 
     return {
+        "status": "created",
         "document_id": numeric_id,
         "external_id": external_id,
         "filename": file.filename,
+        "extraction_status": result.extraction_status,
         "extraction": result.model_dump(),
     }
 
@@ -309,149 +353,8 @@ def get_document(document_id: int):
             "fields": [dict(field) for field in fields],
         }
 @app.get("/documents/{document_id}/person-candidates")
-def document_person_candidates(
-    document_id: int,
-):
-    with connection() as conn:
-        document = conn.execute(
-            """
-            SELECT *
-            FROM documents
-            WHERE id=?
-            """,
-            (document_id,),
-        ).fetchone()
-
-        if not document:
-            raise HTTPException(
-                404,
-                "Document not found",
-            )
-
-        fields = conn.execute(
-            """
-            SELECT
-                field_name,
-                extracted_value,
-                confidence
-            FROM document_fields
-            WHERE document_id=?
-            ORDER BY id
-            """,
-            (document_id,),
-        ).fetchall()
-
-        extracted_name = None
-        extracted_village = None
-
-        for field in fields:
-            if (
-                field["field_name"] == "name"
-                and field["extracted_value"]
-            ):
-                extracted_name = (
-                    field["extracted_value"].strip()
-                )
-
-            if (
-                field["field_name"] == "village"
-                and field["extracted_value"]
-            ):
-                extracted_village = (
-                    field["extracted_value"].strip()
-                )
-
-        # ---------------------------------------------------------
-        # Candidate search
-        # ---------------------------------------------------------
-        candidates = []
-
-        people = conn.execute(
-            """
-            SELECT
-                p.id,
-                p.external_id,
-                p.name,
-                p.sex,
-                p.date_of_birth,
-                p.relationship_to_head,
-                h.id AS household_id,
-                h.external_id AS household_external_id,
-                h.village_id,
-                h.address
-            FROM people p
-            JOIN households h
-              ON h.id = p.household_id
-            ORDER BY p.id
-            """
-        ).fetchall()
-
-        for person in people:
-            score = 0
-            matched_fields = []
-
-            if extracted_name:
-                if (
-                    person["name"].strip().lower()
-                    == extracted_name.lower()
-                ):
-                    score += 0.8
-                    matched_fields.append("name")
-
-            if (
-                extracted_village
-                and person["village_id"]
-            ):
-                if (
-                    person["village_id"].strip().lower()
-                    == extracted_village.lower()
-                ):
-                    score += 0.2
-                    matched_fields.append("village")
-
-            if score > 0:
-                candidates.append(
-                    {
-                        "person_id": person["id"],
-                        "name": person["name"],
-                        "sex": person["sex"],
-                        "date_of_birth": (
-                            person["date_of_birth"]
-                        ),
-                        "household_id": (
-                            person["household_id"]
-                        ),
-                        "household_external_id": (
-                            person["household_external_id"]
-                        ),
-                        "village_id": (
-                            person["village_id"]
-                        ),
-                        "address": person["address"],
-                        "match_score": round(
-                            score,
-                            2,
-                        ),
-                        "matched_fields": (
-                            matched_fields
-                        ),
-                    }
-                )
-
-        candidates.sort(
-            key=lambda item: (
-                item["match_score"],
-                item["person_id"],
-            ),
-            reverse=True,
-        )
-
-        return {
-            "document_id": document_id,
-            "extracted_name": extracted_name,
-            "extracted_village": extracted_village,
-            "candidates": candidates,
-        }
+def document_person_candidates(document_id: int):
+    return _person_match_candidates(document_id)
 
 
 @app.post("/documents/{document_id}/link-person")
@@ -612,6 +515,28 @@ def create_event_from_document(
                 "Document is not linked to this person",
             )
 
+        details_json = json.dumps(payload.details, sort_keys=True, separators=(",", ":"))
+        duplicate = conn.execute(
+            """SELECT id FROM events
+               WHERE source_document_id=? AND person_id=? AND event_type=?
+                 AND COALESCE(event_date, '')=COALESCE(?, '')
+                 AND COALESCE(details_json, '')=?""",
+            (
+                document_id,
+                payload.person_id,
+                payload.event_type,
+                payload.event_date,
+                details_json,
+            ),
+        ).fetchone()
+        if duplicate:
+            return {
+                "status": "duplicate",
+                "event_id": duplicate["id"],
+                "document_id": document_id,
+                "person_id": payload.person_id,
+            }
+
         external_id = (
             f"DOC-EVENT-{document_id}-{uuid.uuid4().hex[:8].upper()}"
         )
@@ -643,7 +568,7 @@ def create_event_from_document(
                 None,
                 payload.event_type,
                 payload.event_date,
-                json.dumps(payload.details),
+                details_json,
                 document_id,
                 payload.verified_by,
             ),
@@ -694,6 +619,7 @@ def verify_field(
     field_id: int,
     payload: FieldVerification,
 ):
+    automatic_event = {"status": "not_ready"}
     with connection() as conn:
         cur = conn.execute(
             """
@@ -725,7 +651,7 @@ def verify_field(
             SELECT COUNT(*) n
             FROM document_fields
             WHERE document_id=?
-              AND verified_value IS NULL
+              AND (verified_value IS NULL OR needs_review=1)
             """,
             (document_id,),
         ).fetchone()["n"]
@@ -771,11 +697,18 @@ def verify_field(
                 ),
             ),
         )
+        if status == "verified":
+            automatic_event = auto_create_event_from_verified_document(
+                conn,
+                document_id,
+                payload.verified_by,
+            )
 
     return {
         "status": "verified",
         "field_id": field_id,
         "document_status": status,
+        "automatic_event": automatic_event,
     }
 
 
@@ -921,18 +854,51 @@ def create_canonical_record(
 
         # Verify source document if provided
         if payload.source_document_id is not None:
-            if not conn.execute(
+            source_document = conn.execute(
                 "SELECT id FROM documents WHERE id=?",
                 (payload.source_document_id,),
-            ).fetchone():
+            ).fetchone()
+            if not source_document:
                 raise HTTPException(
                     404,
                     "Source document not found",
                 )
+            verified_field = conn.execute(
+                """SELECT id FROM document_fields
+                   WHERE document_id=? AND field_name=? AND verified_value=?
+                     AND needs_review=0""",
+                (
+                    payload.source_document_id,
+                    payload.field_name,
+                    payload.value,
+                ),
+            ).fetchone()
+            if not verified_field:
+                raise HTTPException(
+                    409,
+                    "Canonical values must match a verified source-document field",
+                )
+
+        existing = conn.execute(
+            """SELECT * FROM canonical_records
+               WHERE person_id IS ? AND household_id IS ?
+                 AND record_type=? AND field_name=? AND value=?
+                 AND source_document_id IS ?""",
+            (
+                payload.person_id,
+                payload.household_id,
+                payload.record_type,
+                payload.field_name,
+                payload.value,
+                payload.source_document_id,
+            ),
+        ).fetchone()
+        if existing:
+            return {"id": existing["id"], **payload.model_dump(), "status": "duplicate"}
 
         cur = conn.execute(
             """
-            INSERT INTO canonical_records (
+            INSERT OR IGNORE INTO canonical_records (
                 person_id,
                 household_id,
                 record_type,
@@ -953,6 +919,25 @@ def create_canonical_record(
                 payload.source_document_id,
             ),
         )
+
+        if cur.rowcount == 0:
+            existing = conn.execute(
+                """SELECT id FROM canonical_records
+                   WHERE person_id IS ? AND household_id IS ?
+                     AND record_type=? AND field_name=? AND value=?
+                     AND source_document_id IS ?""",
+                (
+                    payload.person_id,
+                    payload.household_id,
+                    payload.record_type,
+                    payload.field_name,
+                    payload.value,
+                    payload.source_document_id,
+                ),
+            ).fetchone()
+            if not existing:
+                raise HTTPException(409, "Canonical record conflicts with an existing record")
+            return {"id": existing["id"], **payload.model_dump(), "status": "duplicate"}
 
         record_id = cur.lastrowid
 

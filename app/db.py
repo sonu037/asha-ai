@@ -1,6 +1,20 @@
 import sqlite3
+import warnings
 from contextlib import contextmanager
 from .config import DB_PATH
+
+
+def _create_unique_index_if_clean(conn, duplicate_query, create_query, index_name):
+    duplicate_groups = conn.execute(duplicate_query).fetchone()[0]
+    if duplicate_groups:
+        warnings.warn(
+            f"Skipped {index_name}: existing duplicate rows need review before "
+            "uniqueness can be enforced.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return
+    conn.execute(create_query)
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -17,7 +31,7 @@ CREATE TABLE IF NOT EXISTS people (
 );
 CREATE TABLE IF NOT EXISTS documents (
  id INTEGER PRIMARY KEY AUTOINCREMENT, external_id TEXT UNIQUE NOT NULL, document_type TEXT,
- original_filename TEXT, storage_path TEXT NOT NULL, captured_at TEXT, ocr_text TEXT, language TEXT,
+ original_filename TEXT, storage_path TEXT NOT NULL, content_hash TEXT, captured_at TEXT, ocr_text TEXT, language TEXT,
  extraction_status TEXT NOT NULL DEFAULT 'pending', verification_status TEXT NOT NULL DEFAULT 'unverified',
  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -61,16 +75,6 @@ CREATE TABLE IF NOT EXISTS document_person_links (
  FOREIGN KEY (document_id) REFERENCES documents(id),
  FOREIGN KEY (person_id) REFERENCES people(id)
 );
-CREATE TABLE IF NOT EXISTS document_person_links (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    document_id INTEGER NOT NULL,
-    person_id INTEGER NOT NULL,
-    linked_by TEXT NOT NULL,
-    linked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(document_id),
-    FOREIGN KEY (document_id) REFERENCES documents(id),
-    FOREIGN KEY (person_id) REFERENCES people(id)
-);
 CREATE TABLE IF NOT EXISTS audit_log (
  id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id TEXT, action TEXT NOT NULL, entity_type TEXT NOT NULL,
  entity_id TEXT NOT NULL, details_json TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -85,12 +89,33 @@ def connection():
     try:
         yield conn
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
 def init_db():
     with connection() as conn:
         conn.executescript(SCHEMA)
+
+        document_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(documents)").fetchall()
+        }
+        if "content_hash" not in document_cols:
+            conn.execute("ALTER TABLE documents ADD COLUMN content_hash TEXT")
+        _create_unique_index_if_clean(
+            conn,
+            """SELECT COUNT(*) FROM (
+                   SELECT content_hash FROM documents
+                   WHERE content_hash IS NOT NULL
+                   GROUP BY content_hash HAVING COUNT(*) > 1
+               )""",
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_content_hash
+               ON documents(content_hash) WHERE content_hash IS NOT NULL""",
+            "idx_documents_content_hash",
+        )
 
         # Lightweight forward migration for v0.2.
         cols = {
@@ -129,3 +154,48 @@ def init_db():
             conn.execute(
                 'ALTER TABLE events ADD COLUMN verified_at TEXT'
             )
+        _create_unique_index_if_clean(
+            conn,
+            """SELECT COUNT(*) FROM (
+                   SELECT source_document_id, person_id, event_type,
+                          COALESCE(event_date, ''), COALESCE(details_json, '')
+                   FROM events
+                   WHERE source_document_id IS NOT NULL AND person_id IS NOT NULL
+                   GROUP BY source_document_id, person_id, event_type,
+                            COALESCE(event_date, ''), COALESCE(details_json, '')
+                   HAVING COUNT(*) > 1
+               )""",
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_events_document_dedup
+               ON events(
+                   source_document_id,
+                   person_id,
+                   event_type,
+                   COALESCE(event_date, ''),
+                   COALESCE(details_json, '')
+               )
+               WHERE source_document_id IS NOT NULL AND person_id IS NOT NULL""",
+            "idx_events_document_dedup",
+        )
+        _create_unique_index_if_clean(
+            conn,
+            """SELECT COUNT(*) FROM (
+                   SELECT COALESCE(person_id, -1), COALESCE(household_id, -1),
+                          record_type, field_name, value,
+                          COALESCE(source_document_id, -1)
+                   FROM canonical_records
+                   GROUP BY COALESCE(person_id, -1), COALESCE(household_id, -1),
+                            record_type, field_name, value,
+                            COALESCE(source_document_id, -1)
+                   HAVING COUNT(*) > 1
+               )""",
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_source_dedup
+               ON canonical_records(
+                   COALESCE(person_id, -1),
+                   COALESCE(household_id, -1),
+                   record_type,
+                   field_name,
+                   value,
+                   COALESCE(source_document_id, -1)
+               )""",
+            "idx_canonical_source_dedup",
+        )

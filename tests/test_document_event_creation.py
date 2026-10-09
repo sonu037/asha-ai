@@ -44,7 +44,7 @@ def test_verified_document_creates_person_event():
         files={
             "file": (
                 "verified_anc.png",
-                b"fake image content",
+                f"fake image content {run_id}".encode(),
                 "image/png",
             )
         },

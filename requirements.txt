@@ -4,3 +4,5 @@ python-multipart
 pydantic
 pytest
 httpx
+pytesseract
+Pillow

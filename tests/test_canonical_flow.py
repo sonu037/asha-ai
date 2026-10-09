@@ -3,11 +3,12 @@ import uuid
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.schema import ExtractedFact, ExtractionEnvelope
 
 client = TestClient(app)
 
 
-def test_verified_field_can_be_promoted_to_canonical_record():
+def test_verified_field_can_be_promoted_to_canonical_record(monkeypatch):
     run_id = uuid.uuid4().hex[:8]
     # ---------------------------------------------------------
     # 1. Create household
@@ -47,17 +48,32 @@ def test_verified_field_can_be_promoted_to_canonical_record():
     # ---------------------------------------------------------
     # 3. Upload the test ASHA document
     # ---------------------------------------------------------
-    with open("test_asha_record.png", "rb") as image:
-        document_response = client.post(
-            "/documents",
-            files={
-                "file": (
-                    "test_asha_record.png",
-                    image,
-                    "image/png",
+    def mock_extraction(_path):
+        return ExtractionEnvelope(
+            document_type="anc_record",
+            provider="test",
+            model="fixture",
+            facts=[
+                ExtractedFact(
+                    field_name="name",
+                    value="Rukhsana",
+                    confidence=1.0,
+                    method="manual",
                 )
-            },
+            ],
         )
+
+    monkeypatch.setattr("app.main.tesseract_provider.extract", mock_extraction)
+    document_response = client.post(
+        "/documents",
+        files={
+            "file": (
+                "test_asha_record.png",
+                f"test document {run_id}".encode(),
+                "image/png",
+            )
+        },
+    )
 
     assert document_response.status_code == 200
 

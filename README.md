@@ -20,6 +20,24 @@ uvicorn app.main:app --reload
 
 Open `/docs` for the API UI.
 
+## OCR runtime requirement
+
+`pytesseract` is a Python wrapper; it does not install the Tesseract OCR
+executable. Install Tesseract separately using a trusted Windows installer or
+package source. If it is installed in the common location
+`C:\Program Files\Tesseract-OCR`, add that directory to the current PowerShell
+session's `PATH` and verify the executable:
+
+```powershell
+$env:Path += ";C:\Program Files\Tesseract-OCR"
+tesseract --version
+```
+
+If installed elsewhere, use that directory instead. Restart the terminal or
+VS Code after making a permanent `PATH` change. If the executable is unavailable
+or OCR returns no text, document extraction is marked `failed` and no extracted
+fields are generated.
+
 ## Important
 Do not put identifiable patient records into this development build until authentication, authorization, encryption, retention, audit controls, and the applicable privacy/governance review are implemented.
 

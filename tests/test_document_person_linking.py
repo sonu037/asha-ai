@@ -43,7 +43,7 @@ def test_document_person_candidate_matching_and_linking():
         files={
             "file": (
                 "test_record.png",
-                b"fake image content",
+                f"fake image content {run_id}".encode(),
                 "image/png",
             )
         },

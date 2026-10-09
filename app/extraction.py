@@ -106,6 +106,23 @@ def extract_basic_facts(text: str) -> list[ExtractedFact]:
             )
 
     # ---------------------------------------------------------
+    # VISIT DATE
+    # ---------------------------------------------------------
+    match = re.search(
+        r"(?im)^\s*(?:visit\s+date|date\s+of\s+visit|event\s+date)\s*"
+        r"[:\-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s*$",
+        text,
+    )
+    if match:
+        _add_fact(
+            facts,
+            field_name="visit_date",
+            value=match.group(1),
+            source_text=match.group(0).strip(),
+            confidence=0.98,
+        )
+
+    # ---------------------------------------------------------
     # LMP - Last Menstrual Period
     # ---------------------------------------------------------
     match = re.search(

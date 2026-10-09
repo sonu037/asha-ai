@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Any, Optional, Literal
+from typing import Any, Literal, Optional
 
 
 class ExtractedFact(BaseModel):
@@ -20,6 +20,7 @@ class ExtractionEnvelope(BaseModel):
     raw_text: str = ""
     facts: list[ExtractedFact] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    extraction_status: Literal["extracted", "failed"] = "extracted"
 
     # Provenance / reproducibility
     provider: str = "unknown"
