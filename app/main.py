@@ -29,9 +29,16 @@ from .classification import DOCUMENT_TYPES
 from .assistant_routes import router as assistant_router
 from .document_intelligence import tesseract_provider
 from .document_conflicts import (
+    assert_document_values_usable,
+    assert_field_usable,
+    assert_no_active_document_conflicts,
     conflicts_for_document,
+    document_has_pending_fields,
     detect_linked_document_conflicts,
+    assert_household_value_usable,
+    assert_person_value_usable,
 )
+from .conflict_routes import router as conflict_router
 from .extraction import date_validation_reason
 
 
@@ -44,6 +51,7 @@ app = FastAPI(
 
 app.include_router(batch_a_router)
 app.include_router(assistant_router)
+app.include_router(conflict_router)
 
 
 @app.on_event("startup")
@@ -650,6 +658,7 @@ def create_event_from_document(
                 409,
                 "Document must be fully verified before creating an event",
             )
+        assert_no_active_document_conflicts(conn, document_id)
         if document["classification_needs_review"]:
             raise HTTPException(
                 409,
@@ -689,6 +698,25 @@ def create_event_from_document(
                 409,
                 "Document is not linked to this person",
             )
+
+        event_values = {
+            key: str(value)
+            for key, value in payload.details.items()
+            if isinstance(value, (str, int, float))
+        }
+        if payload.event_date:
+            event_values.update(
+                {
+                    field_name: payload.event_date
+                    for field_name in ("event_date", "visit_date", "date")
+                }
+            )
+        assert_document_values_usable(
+            conn,
+            document_id,
+            event_values,
+            require_verified=True,
+        )
 
         details_json = json.dumps(payload.details, sort_keys=True, separators=(",", ":"))
         duplicate = conn.execute(
@@ -800,7 +828,7 @@ def verify_field(
     with connection() as conn:
         field = conn.execute(
             """
-            SELECT field_name
+            SELECT *
             FROM document_fields
             WHERE id=? AND document_id=?
             """,
@@ -808,6 +836,7 @@ def verify_field(
         ).fetchone()
         if field is None:
             raise HTTPException(404, "Field not found")
+        assert_field_usable(conn, field_id, payload.verified_value)
         if field["field_name"] in {"visit_date", "lmp", "edd"}:
             validation_reason = date_validation_reason(payload.verified_value)
             if validation_reason is not None:
@@ -841,20 +870,10 @@ def verify_field(
                 "Field not found",
             )
 
-        remaining = conn.execute(
-            """
-            SELECT COUNT(*) n
-            FROM document_fields
-            WHERE document_id=?
-              AND (verified_value IS NULL OR needs_review=1)
-            """,
-            (document_id,),
-        ).fetchone()["n"]
-
         status = (
-            "verified"
-            if remaining == 0
-            else "partially_verified"
+            "partially_verified"
+            if document_has_pending_fields(conn, document_id)
+            else "verified"
         )
 
         conn.execute(
@@ -954,7 +973,8 @@ def create_event(payload: EventCreate, request: Request):
         # Verify source document if provided
         if payload.source_document_id is not None:
             source_document = conn.execute(
-                "SELECT id, classification_needs_review FROM documents WHERE id=?",
+                """SELECT id, classification_needs_review, verification_status
+                   FROM documents WHERE id=?""",
                 (payload.source_document_id,),
             ).fetchone()
             if not source_document:
@@ -970,6 +990,51 @@ def create_event(payload: EventCreate, request: Request):
                     409,
                     "Document classification must be verified before creating a verified event.",
                 )
+            if event_status == "verified" and source_document[
+                "verification_status"
+            ] != "verified":
+                raise HTTPException(
+                    409,
+                    "Source document must be fully verified before creating a verified event.",
+                )
+            if event_status == "verified":
+                if payload.person_id is not None:
+                    linked = conn.execute(
+                        """SELECT 1 FROM document_person_links
+                           WHERE document_id=? AND person_id=?""",
+                        (payload.source_document_id, payload.person_id),
+                    ).fetchone()
+                else:
+                    linked = conn.execute(
+                        """SELECT 1 FROM document_person_links l
+                           JOIN people p ON p.id=l.person_id
+                           WHERE l.document_id=? AND p.household_id=?""",
+                        (payload.source_document_id, payload.household_id),
+                    ).fetchone()
+                if not linked:
+                    raise HTTPException(
+                        409,
+                        "A verified event requires a source document linked to its person or household.",
+                    )
+            assert_no_active_document_conflicts(conn, payload.source_document_id)
+            event_values = {
+                key: str(value)
+                for key, value in payload.details.items()
+                if isinstance(value, (str, int, float))
+            }
+            if payload.event_date:
+                event_values.update(
+                    {
+                        field_name: payload.event_date
+                        for field_name in ("event_date", "visit_date", "date")
+                    }
+                )
+            assert_document_values_usable(
+                conn,
+                payload.source_document_id,
+                event_values,
+                require_verified=True,
+            )
             if not principal.is_admin:
                 if payload.person_id is not None:
                     linked = conn.execute(
@@ -989,6 +1054,28 @@ def create_event(payload: EventCreate, request: Request):
                         409,
                         "Source document must be linked to the event person or household.",
                     )
+        event_values = {
+            key: str(value)
+            for key, value in payload.details.items()
+            if isinstance(value, (str, int, float))
+        }
+        if payload.event_date:
+            event_values.update(
+                {
+                    field_name: payload.event_date
+                    for field_name in ("event_date", "visit_date", "date")
+                }
+            )
+        if payload.person_id is not None:
+            for field_name, value in event_values.items():
+                assert_person_value_usable(
+                    conn, payload.person_id, field_name, value
+                )
+        elif payload.household_id is not None:
+            for field_name, value in event_values.items():
+                assert_household_value_usable(
+                    conn, payload.household_id, field_name, value
+                )
 
         cur = conn.execute(
             """
@@ -1158,6 +1245,26 @@ def create_canonical_record(
                     409,
                     "Canonical values must match a verified source-document field",
                 )
+            assert_field_usable(
+                conn,
+                verified_field["id"],
+                payload.value,
+            )
+
+        if payload.person_id is not None:
+            assert_person_value_usable(
+                conn,
+                payload.person_id,
+                payload.field_name,
+                payload.value,
+            )
+        elif payload.household_id is not None:
+            assert_household_value_usable(
+                conn,
+                payload.household_id,
+                payload.field_name,
+                payload.value,
+            )
 
         existing = conn.execute(
             """SELECT * FROM canonical_records

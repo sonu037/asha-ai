@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 
 class HouseholdCreate(BaseModel):
@@ -61,3 +61,15 @@ class AssistantQuestion(BaseModel):
 class ClassificationVerification(BaseModel):
     document_type: str
     verified_by: str
+
+
+class ConflictReview(BaseModel):
+    decision: Literal[
+        "resolve_source_a",
+        "resolve_source_b",
+        "resolve_with_evidence",
+        "request_evidence",
+        "not_conflict",
+    ]
+    reason: str = Field(min_length=5, max_length=2000)
+    evidence_field_id: Optional[int] = Field(default=None, ge=1)

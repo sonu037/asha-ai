@@ -27,3 +27,8 @@
    Staging/production requests require a configured Bearer-token principal and server-side person/household/document checks. Development mode remains unrestricted and must use synthetic data.
 10. **Assistant output is evidence-first.**
     The initial assistant retrieves structured records and cites stored source IDs; it does not generate clinical facts or write to canonical records.
+11. **Conflicts require explicit adjudication before promotion.**
+    Open and evidence-pending cross-document conflicts block disputed-field
+    verification and affected event/canonical writes. A scoped reviewer
+    decision preserves candidate evidence and history; resolving a conflict
+    does not automatically verify any field.

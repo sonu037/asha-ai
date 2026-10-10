@@ -15,8 +15,8 @@ verification, event creation, scoped search and retrieval, and audit records.
 The code and tests verify parts of those paths. They do not establish a complete
 backend lifecycle or production security/operations baseline.
 
-The most consequential gaps are: no operational review queue or conflict
-adjudication; no required-field checklist or follow-up task API; incomplete
+The most consequential gaps are: no general document/classification review
+queue; no required-field checklist or follow-up task API; incomplete
 household/person lifecycle operations; unversioned in-code schema migrations;
 and incomplete operational controls around configuration, health/readiness,
 audit coverage, token lifecycle, backups, and deployment verification.
@@ -47,8 +47,10 @@ The document path is:
    verify fields. A verified, linked ANC document can be mapped to an event
    under specific gates; explicit event-creation endpoints also exist.
 5. Linked document conflicts are detected for a limited set of same-person,
-   same-document-type, same-visit comparisons and are exposed with source
-   references.
+   same-document-type, same-visit comparisons. Scoped queue, detail and
+   adjudication endpoints now preserve candidate sources and review history.
+   Unresolved conflicts block disputed-field verification and relevant event
+   and canonical-record promotion paths.
 
 The core upload/verification flow is implemented in
 [`app/main.py`](../app/main.py#L231), provider selection and extraction in
@@ -64,16 +66,21 @@ cross-document comparison in [`app/document_conflicts.py`](../app/document_confl
 | Health | `GET /health` |
 | Household/person | `POST /households`, `GET /households`, `GET /households/{household_id}/timeline`, `POST /people`, `GET /people/{person_id}` |
 | Documents | `POST /documents`, `GET /documents/{document_id}`, `GET /documents/{document_id}/person-candidates`, `GET /documents/{document_id}/match-candidates`, `POST /documents/{document_id}/link-person`, `POST /documents/{document_id}/classification/verify`, `POST /documents/{document_id}/fields/{field_id}/verify`, `POST /documents/{document_id}/create-event`, `POST /documents/{document_id}/create-verified-event` |
+| Conflict review | `GET /conflicts?status=unresolved&limit=20&offset=0`, `GET /conflicts/{conflict_id}`, `POST /conflicts/{conflict_id}/review` |
 | Events and canonical records | `POST /events`, `POST /canonical-records`, `GET /people/{person_id}/records`, `GET /people/{person_id}/timeline`, `GET /people/{person_id}/pregnancy-summary` |
 | Search and summary | `GET /search`, `GET /people/{person_id}/health-summary` |
 | Assistant | `POST /people/{person_id}/assistant` |
 
-Route declarations are in [`app/main.py`](../app/main.py#L55),
+Conflict listing is bounded (limit 1-100) and accepts `unresolved`, `open`,
+`needs_evidence`, and the four resolved statuses. Review decisions are
+`resolve_source_a`, `resolve_source_b`, `resolve_with_evidence`,
+`needs_evidence`, and `not_conflict`. Route declarations are in
+[`app/main.py`](../app/main.py#L55),
 [`app/batch_a.py`](../app/batch_a.py#L221), and
-[`app/assistant_routes.py`](../app/assistant_routes.py#L11). There are no
-household/person update, deactivate, merge, or delete routes; no general
-document review-queue route; no conflict-resolution route; and no checklist
-or follow-up-task routes.
+[`app/assistant_routes.py`](../app/assistant_routes.py#L11); conflict review
+routes are in [`app/conflict_routes.py`](../app/conflict_routes.py#L14).
+There are no household/person update, deactivate, merge, or delete routes; no
+general document review-queue route; and no checklist or follow-up-task routes.
 
 ### SQLite tables
 
@@ -82,14 +89,15 @@ or follow-up-task routes.
 - `households`, `people`
 - `documents`, `document_fields`, `document_person_links`
 - `canonical_records`, `events`
-- `document_field_conflicts`
+- `document_field_conflicts`, `document_conflict_reviews`
 - `audit_log`
 
 Foreign keys are enabled on application connections. There are unique external
 IDs, a unique document/person link, and conditionally-installed uniqueness
-indexes for document hashes and event/canonical deduplication. The schema has no
-general task/checklist, conflict-resolution history, token registry, or
-household/person lifecycle tables. Definitions and migrations are in
+indexes for document hashes and event/canonical deduplication. Conflict
+decisions have a separate history table. The schema has no general
+task/checklist, token registry, or household/person lifecycle tables.
+Definitions and additive migrations are in
 [`app/db.py`](../app/db.py#L20).
 
 ## Component findings
@@ -115,7 +123,7 @@ Status definitions used below:
 | Required-field checklists | **Missing** | There is no checklist schema/API. Pregnancy summary computes a narrow set of LMP/EDD/ANC measurement completeness booleans, but the assistant explicitly reports generalized missing-field questions unavailable. |
 | Follow-up task APIs | **Missing** | No task table or task routes exist. Follow-up questions return `unavailable`; there is no create/assign/due/status/complete workflow. |
 | Search and longitudinal retrieval | **Partially implemented** | `/search` searches record metadata and applies person/household scoping; timeline, pregnancy summary, health summary, and structured assistant retrieval exist. The assistant uses keyword-selected intents, not general evidence-grounded question understanding. It does not provide a generalized query over OCR/source text, and incomplete workflows are returned as unavailable. |
-| Cross-document conflict handling | **Partially implemented** | Same-person comparisons across matching document type and date, optionally matching ANC visit, create conflict rows and flag both fields for review. Both field values and source text are returned. Conflicts remain `open`; no resolution/adjudication endpoint or resolution audit history exists, and comparisons do not cover all record types or identity/household lifecycle changes. |
+| Cross-document conflict handling | **Implemented but incompletely tested** | Same-person comparisons across matching document type/date and optionally ANC visit create conflict rows and flag both fields for review. `GET /conflicts` is bounded and scope-filtered; detail returns candidate values, source text, document/person context and decision history; `POST /conflicts/{id}/review` records an authorized decision, rationale, reviewer and timestamp. `open` and `needs_evidence` remain blocking; source-based, external-evidence and justified not-conflict resolutions are explicit. Newly detected contradictions reopen matching resolved conflicts. Field verification, automatic/explicit document events, generic event creation and canonical-record creation consult centralized conflict rules. Discovery remains limited to matching document type and dated visits; assignment and general document/classification review queues are not implemented. |
 | API schemas, validation, and errors | **Partially implemented** | Pydantic request models, query constraints, and explicit 4xx cases exist. Route responses are mostly untyped dictionaries without response models; date/status/value constraints are uneven; error response shapes are framework-default and not normalized. `create_household` catches broad exceptions and includes the underlying exception text in its 409 detail (`app/main.py`). |
 | Authentication and resource authorization | **Implemented but incompletely tested** | In staging/production, bearer tokens are SHA-256 hashed and compared; principal scopes guard person, household, and document routes. Tests cover unauthenticated production access, cross-person reads/writes, actor spoofing, malformed configuration, and duplicate-upload non-disclosure. Development defaults to an unrestricted administrator. Scoped tokens are static configuration with no issuance, expiry, rotation, or revocation workflow. |
 | Audit logging | **Partially implemented** | Several writes and authorized reads insert `audit_log` records; event verification and document linking have explicit audit writes. Audit events are not a complete immutable audit system: failed authentication/authorization, many failure paths, and future mutation/deletion workflows are not comprehensively captured; there is no retention, integrity protection, export, or operator review interface. |
@@ -149,18 +157,24 @@ and [`tests/test_real_ocr_evaluation.py`](../tests/test_real_ocr_evaluation.py).
    before the document row and OCR persistence are complete. The implementation
    removes the file on DB insert errors, but there is no durable processing
    state/retry/reconciliation mechanism for process termination between phases.
-6. **Verification and conflict adjudication are separate gaps.** Existing
-   conflicts are persisted and their candidate fields marked for review, but
-   the conflict remains open and there is no route to select a resolution or
-   record rationale. More importantly, `verify_field` clears a field's
-   `needs_review` flag without checking for an open conflict
-   ([`app/main.py`](../app/main.py#L792)); the verified-document event helper
-   does not check `document_field_conflicts` status
-   ([`app/batch_a.py`](../app/batch_a.py#L80)), and canonical promotion checks
-   the field verification flag but not open conflicts
-   ([`app/main.py`](../app/main.py#L1146)). Thus a reviewer can promote one
-   candidate while the contradictory record remains unresolved. This is the
-   highest-priority data-integrity gap in the current workflow.
+6. **Conflict review is implemented, but discovery and adjacent review
+   lifecycle coverage remain bounded.** Active (`open`, `needs_evidence`)
+   conflicts prevent verification of either disputed field and block document
+   promotion. Shared guards cover automatic ANC event creation,
+   `POST /documents/{id}/create-event`,
+   `POST /documents/{id}/create-verified-event`, `POST /events` when a source
+   document is supplied, and `POST /canonical-records` for person/household
+   values and source fields. `POST /conflicts/{id}/review` requires an
+   authorized in-scope principal, a supported state transition, a substantive
+   reason, and (for evidence-based selection) another field linked to the same
+   person and matching the conflict's field and visit. Decision history and
+   audit rows are written in the same SQLite transaction as the decision. A
+   selected source candidate must still be separately verified; unrelated
+   fields are not automatically verified. Contradictory newly linked evidence
+   reopens matching source-resolved conflicts and invalidates prior field
+   verification. Detection still compares only matching document types and
+   dated visits; it does not cover all record types, and there is no assignment
+   or general document review queue.
 7. **Schema/domain constraints are uneven.** SQLite foreign keys help prevent
    orphan references, but there are few `CHECK` constraints for status values,
    event type/date validity, and verification metadata; API fields use plain
@@ -198,6 +212,22 @@ run stall was not reproduced in the verbose rerun.
 The real OCR results and their dataset limitations remain documented in
 [`DOCUMENT_INTELLIGENCE_VALIDATION.md`](./DOCUMENT_INTELLIGENCE_VALIDATION.md).
 
+### Conflict-review milestone validation
+
+The conflict-review implementation was validated with synthetic test data.
+The focused conflict suite passed **7 tests** after the final added regression
+assertion for source-less canonical writes. The complete suite passed
+**66 tests, 3 warnings, 0 failures in 45.04 seconds** before that test-only
+assertion was added. `python -m compileall -q app tests scripts` and
+`git diff --check` also completed successfully.
+
+Two subsequent complete-suite reruns stalled during Windows
+`TestClient`/AnyIO Proactor event-loop startup, before producing an assertion
+failure; the targeted test at the first observed stall passed independently.
+This intermittent test-runtime behavior remains noted rather than reported as
+a product test failure. Warnings are the existing Starlette/httpx and FastAPI
+lifespan deprecations.
+
 ## Prioritized implementation plan
 
 The following is a backend-completion sequence. It deliberately excludes
@@ -205,10 +235,11 @@ pretrained models and later user-facing product work.
 
 ### P0 — Close safety and integrity gaps in existing flows
 
-1. Add an operational review queue and conflict adjudication workflow:
-   list/filter/assign review items, resolve conflicts with rationale and actor,
-   preserve both sources, audit every transition, and prevent unresolved
-   conflicting candidates from entering canonical data/events.
+1. **Conflict adjudication and promotion guards are implemented in this
+   milestone.** Remaining P0 review work: extend conflict discovery only
+   against defined domain rules, and provide assignment plus general
+   classification/document-review queues. Preserve existing authorization,
+   evidence and audit requirements with regression coverage.
 2. Define and enforce document processing states and recovery semantics across
    file write, DB insert, OCR, and fact persistence. Make retries/idempotency
    explicit and add tests for interruption/failure at each boundary.

@@ -9,6 +9,11 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from .auth import Principal, actor_for_request, person_access_predicate
 from .assistant import build_longitudinal_summary
 from .db import connection
+from .document_conflicts import (
+    assert_document_values_usable,
+    assert_no_active_document_conflicts,
+    document_has_pending_fields,
+)
 from .models import DocumentEventCreate
 
 
@@ -86,6 +91,7 @@ def auto_create_event_from_verified_document(conn, document_id, verified_by):
         return {"status": "not_ready"}
     if document["classification_needs_review"]:
         return {"status": "not_ready", "reason": "Document classification requires review."}
+    assert_no_active_document_conflicts(conn, document_id)
 
     link = conn.execute(
         "SELECT person_id FROM document_person_links WHERE document_id=?",
@@ -106,12 +112,7 @@ def auto_create_event_from_verified_document(conn, document_id, verified_by):
         )
 
     fields = _document_fields(conn, document_id)
-    unverified_fields = conn.execute(
-        """SELECT COUNT(*) AS n FROM document_fields
-           WHERE document_id=? AND (verified_value IS NULL OR needs_review=1)""",
-        (document_id,),
-    ).fetchone()["n"]
-    if unverified_fields:
+    if document_has_pending_fields(conn, document_id):
         return {"status": "not_ready"}
 
     verified_values = {
@@ -251,12 +252,8 @@ def create_verified_event(
                     "Document classification must be verified before creating an event.",
                 )
 
-            unverified = conn.execute(
-                """SELECT COUNT(*) AS n FROM document_fields
-                   WHERE document_id=? AND (verified_value IS NULL OR needs_review=1)""",
-                (document_id,),
-            ).fetchone()["n"]
-            if unverified:
+            assert_no_active_document_conflicts(conn, document_id)
+            if document_has_pending_fields(conn, document_id):
                 raise HTTPException(
                     409,
                     "All extracted fields must be verified before creating an event",
@@ -284,6 +281,24 @@ def create_verified_event(
             for name, value in verified_field_values.items():
                 if name not in details:
                     details[name] = value
+            event_values = {
+                key: str(value)
+                for key, value in details.items()
+                if isinstance(value, (str, int, float))
+            }
+            if event_date:
+                event_values.update(
+                    {
+                        field_name: event_date
+                        for field_name in ("event_date", "visit_date", "date")
+                    }
+                )
+            assert_document_values_usable(
+                conn,
+                document_id,
+                event_values,
+                require_verified=True,
+            )
             details["source"] = "verified_document"
             details["document_id"] = document_id
 

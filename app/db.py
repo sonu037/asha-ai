@@ -97,6 +97,19 @@ CREATE TABLE IF NOT EXISTS document_field_conflicts (
  FOREIGN KEY (field_id_b) REFERENCES document_fields(id),
  FOREIGN KEY (document_id_b) REFERENCES documents(id)
 );
+CREATE TABLE IF NOT EXISTS document_conflict_reviews (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ conflict_id INTEGER NOT NULL,
+ reviewer_id TEXT NOT NULL,
+ previous_status TEXT NOT NULL,
+ decision TEXT NOT NULL,
+ reason TEXT NOT NULL,
+ selected_field_id INTEGER,
+ details_json TEXT,
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ FOREIGN KEY (conflict_id) REFERENCES document_field_conflicts(id),
+ FOREIGN KEY (selected_field_id) REFERENCES document_fields(id)
+);
 CREATE TABLE IF NOT EXISTS audit_log (
  id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id TEXT, action TEXT NOT NULL, entity_type TEXT NOT NULL,
  entity_id TEXT NOT NULL, details_json TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -120,6 +133,34 @@ def connection():
 def init_db():
     with connection() as conn:
         conn.executescript(SCHEMA)
+
+        conflict_cols = {
+            row["name"]
+            for row in conn.execute(
+                "PRAGMA table_info(document_field_conflicts)"
+            ).fetchall()
+        }
+        conflict_migrations = {
+            "resolution_decision": "TEXT",
+            "selected_field_id": "INTEGER",
+            "resolution_reason": "TEXT",
+            "resolved_by": "TEXT",
+            "resolved_at": "TEXT",
+        }
+        for column, column_type in conflict_migrations.items():
+            if column not in conflict_cols:
+                conn.execute(
+                    "ALTER TABLE document_field_conflicts "
+                    f"ADD COLUMN {column} {column_type}"
+                )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_document_conflicts_status
+               ON document_field_conflicts(status, person_id, field_name)"""
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_conflict_reviews_conflict
+               ON document_conflict_reviews(conflict_id, id)"""
+        )
 
         document_cols = {
             row["name"]
